@@ -88,12 +88,46 @@ Command: `uv run steno-zero evolve --generations 1000 --sample-chars 0 --workers
 
 With the penalty the long run gives up 5.4 % of pure typing time on train and cuts the confusion by 58 %; in total `T` the two tables are within 0.5 % of each other. These numbers describe the placeholder cost model, not a real keyboard.
 
+## Trainer
+
+A static browser page for typing phrases with a table on an ordinary keyboard. It exists to measure how long a person takes per chord and how often they hit a neighbouring chord; the prices in `CostParams`, `slip_prob` and `confusion_s` are still placeholders. Open `docs/index.html` from disk, or serve the `docs/` folder with GitHub Pages. The page has no build step, no npm and no external links; the interface is in Russian.
+
+Rebuild `docs/data.js` (it is committed, because GitHub Pages needs it and the corpus is not in git):
+
+```
+uv run steno-zero rival --part train --out runs/rival-train.json
+uv run steno-zero trainer export --table rival=runs/rival-train.json \
+    --table evolved=runs/long-g1000-full-confusion/best.json
+```
+
+The first table is the one opened by default; `index.html?table=evolved` picks another. `export` takes 200 home phrases from the train part of the corpus and 100 exam phrases from the test part (the two sets do not intersect), cuts each phrase with the same greedy segmentation as the simulator and writes everything, layout included, to one file. Running it again gives the same bytes. Options: `--corpus`, `--min-len`, `--max-len`, `--home-limit`, `--exam-limit`, `--exam-size`, `--out`.
+
+Layout: key `i` is bit `i` of the chord. The page reads `KeyboardEvent.code`, so the OS keyboard layout does not matter.
+
+| i | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| key | `a` | `s` | `d` | `f` | `v` | `n` | `j` | `k` | `l` | `;` |
+| finger | left little | left ring | left middle | left index | left index, down | right index, down | right index | right middle | right ring | right little |
+
+The help key is the physical `/` key (`Slash`, `.` on a Russian layout).
+
+A chord fires when all its keys are released: press the keys together, let go, and the chord is the set of keys held since the first press. A wrong chord is not accepted and the piece must be repeated (strict mode); there is no backspace.
+
+Two modes. Home: phrase after phrase, help on the `/` key, a hint for the next piece, nothing is recorded. Exam (the "Экзамен" button): 5 random phrases from the exam set, no help and no hint, a timer that starts at the first key press. **Measurements are written only in the exam.** At the end the page shows the time, symbols per minute and misses, and "Скачать журнал" saves a JSON log (`steno-zero-<session>.json`, format `steno-zero/trainer-log`, version 1: session, table and its SHA-256, start and finish, user agent, the largest number of keys held at once, phrase indices and one record `phrase, pos, target, typed, down_ms, up_ms` per fired chord). An aborted exam leaves nothing.
+
+```
+uv run steno-zero trainer stats runs/trainer/*.json --out runs/trainer/stats.json
+```
+
+`trainer stats` prints one JSON line per session (time, symbols per minute, misses) and a summary line (misses by a neighbouring chord or otherwise, `slip_prob`, the median interval between clean consecutive chords). With `--out` the file also holds the time and the misses of every chord. `slip_prob` is the neighbour misses divided by the number of neighbours of all targets, the same quantity as `PenaltyParams.slip_prob`. These numbers are measurements of one person on one keyboard: a laptop keyboard may lose keys pressed together (the page shows the largest number held at once), and the figures are not a general property of chords.
+
 ## Not supported
 
 - Crossover of tables and resuming an interrupted run.
 - The neural network.
 - Chord prices that depend on the previous chord, slips of more than one key, per-finger slip rates, measured slip rates, measured prices.
 - Memory penalty stages beyond a per-entry cost with a rarity surcharge.
+- Free typing with backspace in the trainer, a random-chord mode, an estimate of `confusion_s` and measurements in the home mode.
 - Capital letters, digits, quotes, brackets, Latin letters and line breaks: normalisation drops them.
 
 ## License

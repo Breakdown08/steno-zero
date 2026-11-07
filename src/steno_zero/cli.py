@@ -27,6 +27,20 @@ from steno_zero.plot import plot_log
 from steno_zero.rival import rival_table
 from steno_zero.simulate import Score, evaluate
 from steno_zero.table import Table
+from steno_zero.trainer import (
+    EXAM_LIMIT,
+    EXAM_SIZE,
+    HOME_LIMIT,
+    PHRASE_MAX_LEN,
+    PHRASE_MIN_LEN,
+    TrainerLog,
+    TrainerStats,
+    read_trainer_log,
+    split_phrases,
+    trainer_data,
+    trainer_stats,
+    write_data_js,
+)
 
 DEFAULT_SOURCES: Path = Path("data/corpus/sources.json")
 DEFAULT_CORPUS: Path = Path("data/corpus/classics.txt")
@@ -67,6 +81,21 @@ def _build_parser() -> argparse.ArgumentParser:
     plot: argparse.ArgumentParser = sub.add_parser("plot", help="plot the record log")
     plot.add_argument("--log", type=Path, required=True)
     plot.add_argument("--out", type=Path, default=None)
+
+    trainer: argparse.ArgumentParser = sub.add_parser("trainer", help="browser trainer data and statistics")
+    trainer_sub: Any = trainer.add_subparsers(dest="trainer_command", required=True)
+    export: argparse.ArgumentParser = trainer_sub.add_parser("export", help="build docs/data.js")
+    export.add_argument("--table", action="append", required=True, metavar="NAME=PATH")
+    export.add_argument("--corpus", type=Path, default=None)
+    export.add_argument("--min-len", type=int, default=PHRASE_MIN_LEN)
+    export.add_argument("--max-len", type=int, default=PHRASE_MAX_LEN)
+    export.add_argument("--home-limit", type=int, default=HOME_LIMIT)
+    export.add_argument("--exam-limit", type=int, default=EXAM_LIMIT)
+    export.add_argument("--exam-size", type=int, default=EXAM_SIZE)
+    export.add_argument("--out", type=Path, default=Path("docs/data.js"))
+    stats: argparse.ArgumentParser = trainer_sub.add_parser("stats", help="statistics of exam logs")
+    stats.add_argument("logs", type=Path, nargs="+", metavar="LOG")
+    stats.add_argument("--out", type=Path, default=None)
     return parser
 
 
@@ -191,6 +220,62 @@ def _plot_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _trainer_export(args: argparse.Namespace) -> int:
+    tables: list[tuple[str, Table]] = []
+    spec: str
+    for spec in args.table:
+        name: str
+        sep: str
+        path: str
+        name, sep, path = spec.partition("=")
+        if sep == "":
+            raise ValueError(f"--table {spec!r}: expected NAME=PATH")
+        tables.append((name, Table.from_json(Path(path).read_text(encoding="utf-8"))))
+    text: str = _read_text(args.corpus, "all")
+    home: list[str]
+    exam: list[str]
+    home, exam = split_phrases(text, args.min_len, args.max_len, args.home_limit, args.exam_limit)
+    write_data_js(trainer_data(tables, home, exam, args.exam_size), args.out)
+    print(
+        _dump(
+            {
+                "out": str(args.out),
+                "phrases": len(home),
+                "exam_phrases": len(exam),
+                "tables": [n for n, _ in tables],
+            }
+        )
+    )
+    return 0
+
+
+def _trainer_stats(args: argparse.Namespace) -> int:
+    logs: list[TrainerLog] = [read_trainer_log(p.read_text(encoding="utf-8")) for p in args.logs]
+    result: TrainerStats = trainer_stats(logs)
+    summary: dict[str, Any] = {
+        "sessions": len(result.sessions),
+        "attempts": result.attempts,
+        "correct": result.correct,
+        "neighbour_misses": result.neighbour_misses,
+        "other_misses": result.other_misses,
+        "slip_prob": result.slip_prob,
+        "median_ms": result.median_ms,
+    }
+    rows: list[dict[str, Any]] = [dataclasses.asdict(s) for s in result.sessions]
+    row: dict[str, Any]
+    for row in rows:
+        print(_dump(row))
+    print(_dump(summary))
+    if args.out is not None:
+        chords: list[dict[str, Any]] = [
+            {**dataclasses.asdict(c), "typed": [list(t) for t in c.typed]} for c in result.chords
+        ]
+        full: dict[str, Any] = {**summary, "sessions": rows, "chords": chords}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(full, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.command == "corpus":
         print(fetch_corpus(args.sources, args.out))
@@ -199,6 +284,8 @@ def _run(args: argparse.Namespace) -> int:
         return _evolve_command(args)
     if args.command == "plot":
         return _plot_command(args)
+    if args.command == "trainer":
+        return _trainer_export(args) if args.trainer_command == "export" else _trainer_stats(args)
     text: str = _read_text(args.corpus, args.part)
     costs: tuple[int, ...] = chord_costs(CostParams())
     table: Table

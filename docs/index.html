@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>steno-zero: тренажёр аккордов</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: sans-serif; max-width: 52em; margin: 1.5em auto; padding: 0 1em; color: #222; }
+  header { display: flex; align-items: center; gap: 1em; flex-wrap: wrap; }
+  h1 { font-size: 1.3em; margin: 0; flex: 1; }
+  #status { color: #555; margin: 0.5em 0; }
+  #phrase { font-size: 1.6em; margin: 0.6em 0 0.2em; font-family: monospace; white-space: pre-wrap; }
+  .done { color: #aaa; }
+  .next { text-decoration: underline; }
+  #hint { height: 1.4em; color: #357; font-family: monospace; }
+  #field { border: 1px solid #888; border-radius: 4px; padding: 0.4em 0.6em; min-height: 1.4em;
+           font-size: 1.4em; font-family: monospace; white-space: pre-wrap; background: #fafafa; }
+  .wrong { color: #c00; }
+  #keys { margin: 1em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
+  .group { display: flex; gap: 0.3em; }
+  .key { width: 2em; height: 2em; border: 1px solid #888; border-radius: 4px; text-align: center;
+         line-height: 2em; font-family: monospace; }
+  .key.on { background: #4a8; color: #fff; }
+  details { margin: 1em 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.4em 0.8em; }
+  table { border-collapse: collapse; margin: 0.5em 0; }
+  td, th { border: 1px solid #ccc; padding: 0.15em 0.5em; text-align: left; }
+  #entries { columns: 4; font-family: monospace; font-size: 0.9em; }
+  #result { border: 2px solid #4a8; border-radius: 4px; padding: 0.5em 1em; margin: 1em 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Тренировка</h1>
+  <label>Таблица: <select id="table"></select></label>
+  <button id="mode" type="button">Экзамен</button>
+</header>
+<div id="status"></div>
+<div id="phrase"></div>
+<div id="hint"></div>
+<label id="hint-switch">
+  <input type="checkbox" id="hint-on" checked> подсказка
+</label>
+<div id="field"></div>
+<details id="help">
+  <summary>Справка (/)</summary>
+  <p>Нажмите клавиши аккорда вместе: он срабатывает, когда отпущены все клавиши.</p>
+  <table id="layout"></table>
+  <p>Клавиши управления: <b>/</b> открывает и закрывает справку, <b>Esc</b> пропускает фразу.</p>
+  <p>Экзамен: несколько случайных фраз из отдельного набора, без справки и подсказки. Идёт
+     таймер, в конце показывается итог, а журнал можно скачать. Замеры пишутся только в экзамене.</p>
+  <p>Раскладка ОС не важна: страница смотрит на физические клавиши.</p>
+  <div id="entries"></div>
+</details>
+<div id="keys">
+  <div class="group" id="left"></div>
+  <div class="group" id="right"></div>
+  <span id="held">максимум одновременно: 0</span>
+</div>
+<div id="result" hidden>
+  <div id="summary"></div>
+  <button id="download" type="button">Скачать журнал</button>
+  <button id="home" type="button">Домой</button>
+</div>
+<script src="data.js"></script>
+<script src="trainer.js"></script>
+</body>
+</html>
