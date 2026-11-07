@@ -51,5 +51,13 @@ def test_pyproject_metadata() -> None:
     data: dict[str, Any] = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project: dict[str, Any] = data["project"]
     assert project["license"] == "Apache-2.0"
-    assert project["dependencies"] == []
+    deps: list[str] = project["dependencies"]
+    assert len(deps) == 1
+    assert deps[0].startswith("matplotlib")
     assert project["requires-python"] == ">=3.14"
+
+
+def test_runs_dir_is_ignored() -> None:
+    assert git_ignored("runs/seed-0/log.jsonl") == 0
+    assert git_ignored("data/corpus/classics.txt") == 0
+    assert git_ignored("data/corpus/sources.json") == 1

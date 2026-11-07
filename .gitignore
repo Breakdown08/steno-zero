@@ -220,3 +220,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 data/corpus/*.txt
+
+# Evolution runs
+runs/
