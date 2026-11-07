@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "steno-zero"
+version = "0.1.0"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+steno-zero = "steno_zero.cli:main"
+
+[dependency-groups]
+dev = ["mypy", "pytest", "ruff", "ty"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/steno_zero"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ANN"]
+
+# Every variable, parameter and return value is typed. ty is the reference checker;
+# tests/test_annotations.py covers variables, which no checker requires.
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
