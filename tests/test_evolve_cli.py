@@ -27,7 +27,7 @@ RUN_KEYS: list[str] = [
 ]  # fmt: skip
 GEN_KEYS: list[str] = [
     "type", "generation", "best_total", "gen_best_total", "mean_total", "entries", "t_char", "memory",
-    "record", "evaluations",
+    "confusion", "record", "evaluations",
 ]  # fmt: skip
 RESULT_KEYS: list[str] = [
     "type", "best_total", "rival_total", "train_total", "rival_train_total", "test_total",
@@ -96,7 +96,7 @@ def test_log_structure(evolved: tuple[Path, int, str]) -> None:
 def test_log_run_row_content(evolved: tuple[Path, int, str]) -> None:
     run: dict[str, Any] = log_lines(evolved[0])[0]
     assert run["format"] == "steno-zero/evolve-log"
-    assert run["version"] == 1
+    assert run["version"] == 2
     assert run["text_sha256"] == hashlib.sha256(fragment().encode("utf-8")).hexdigest()
     train: str
     test: str

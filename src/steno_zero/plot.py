@@ -26,8 +26,8 @@ def read_log(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not rows or rows[0].get("type") != "run":
         raise ValueError(f"{path}: the first line must be a run line")
     run: dict[str, Any] = rows[0]
-    if run.get("format") != LOG_FORMAT or run.get("version") != 1:
-        raise ValueError(f"{path}: not a steno-zero evolve log, version 1")
+    if run.get("format") != LOG_FORMAT or run.get("version") not in (1, 2):
+        raise ValueError(f"{path}: not a steno-zero evolve log, version 1 or 2")
     gens: list[dict[str, Any]] = [r for r in rows if r.get("type") == "generation"]
     if not gens:
         raise ValueError(f"{path}: no generation lines")

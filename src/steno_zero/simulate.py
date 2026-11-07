@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from steno_zero.alphabet import ALPHABET
+from steno_zero.chords import neighbours
 from steno_zero.params import PenaltyParams
 from steno_zero.table import Table
 
@@ -21,6 +22,7 @@ class Score:
     typing_ms: int
     t_char: float
     memory: float
+    confusion: float
     total: float
     usage: dict[str, int]
 
@@ -63,11 +65,24 @@ def decode(chords: Sequence[int], table: Table) -> str:
     return "".join(parts)
 
 
+def neighbour_counts(table: Table) -> dict[str, int]:
+    taken: set[int] = {table.chord(p) for p in table.entries}
+    counts: dict[str, int] = {}
+    p: str
+    for p in table.entries:
+        counts[p] = sum(1 for c in neighbours(table.chord(p)) if c in taken)
+    return counts
+
+
 def evaluate(text: str, table: Table, costs: Sequence[int], penalty: PenaltyParams, horizon: float) -> Score:
     if text == "":
         raise ValueError("empty text")
     if horizon <= 0:
         raise ValueError("horizon must be positive")
+    if not 0.0 <= penalty.slip_prob <= 1.0:
+        raise ValueError("slip_prob must be within 0..1")
+    if penalty.confusion_s < 0:
+        raise ValueError("confusion_s must not be negative")
     pieces: list[str] = _pieces(text, table)
     usage: dict[str, int] = dict.fromkeys(table.entries, 0)
     typing_ms: int = 0
@@ -82,4 +97,9 @@ def evaluate(text: str, table: Table, costs: Sequence[int], penalty: PenaltyPara
     for n in usage.values():
         uses: float = horizon * n / chars
         memory += penalty.entry_s + penalty.rarity_s * penalty.rarity_uses / (penalty.rarity_uses + uses)
-    return Score(chars, len(pieces), typing_ms, t_char, memory, horizon * t_char + memory, usage)
+    confusion: float = 0.0
+    if penalty.slip_prob != 0.0 and penalty.confusion_s != 0.0:
+        weight: int = sum(usage[p] * k for p, k in neighbour_counts(table).items())
+        confusion = penalty.slip_prob * penalty.confusion_s * horizon * weight / chars
+    total: float = (horizon * t_char + memory) + confusion
+    return Score(chars, len(pieces), typing_ms, t_char, memory, confusion, total, usage)

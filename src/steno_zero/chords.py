@@ -12,6 +12,12 @@ def chord_keys(chord: int) -> tuple[int, ...]:
     return tuple(i for i in range(N_KEYS) if chord >> i & 1)
 
 
+def neighbours(chord: int) -> tuple[int, ...]:
+    if not 1 <= chord <= N_CHORDS:
+        raise ValueError(f"chord out of range 1..{N_CHORDS}: {chord}")
+    return tuple(sorted(n for n in (chord ^ (1 << i) for i in range(N_KEYS)) if n >= 1))
+
+
 def chord_costs(params: CostParams) -> tuple[int, ...]:
     if len(params.finger_ms) != N_KEYS:
         raise ValueError(f"finger_ms must have {N_KEYS} numbers")

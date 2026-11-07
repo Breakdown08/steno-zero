@@ -50,11 +50,13 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--corpus", type=Path, default=None)
         p.add_argument("--horizon", type=float, default=DEFAULT_HORIZON)
         p.add_argument("--part", choices=["all", "train", "test"], default="all")
+        p.add_argument("--confusion-s", type=float, default=PenaltyParams().confusion_s)
     rival.add_argument("--out", type=Path, default=None)
 
     evo: argparse.ArgumentParser = sub.add_parser("evolve", help="evolve a table from scratch")
     evo.add_argument("--corpus", type=Path, default=None)
     evo.add_argument("--horizon", type=float, default=DEFAULT_HORIZON)
+    evo.add_argument("--confusion-s", type=float, default=PenaltyParams().confusion_s)
     evo.add_argument("--seed", type=int, default=0)
     evo.add_argument("--population", type=int, default=EvolveParams().population)
     evo.add_argument("--generations", type=int, default=EvolveParams().generations)
@@ -93,6 +95,7 @@ def _summary(score: Score, entries: int) -> str:
             "entries": entries,
             "t_char": score.t_char,
             "memory": score.memory,
+            "confusion": score.confusion,
             "total": score.total,
         }
     )
@@ -118,7 +121,7 @@ def _evolve_command(args: argparse.Namespace) -> int:
     train, test = split_corpus(text, 0.1)
     fit: str = fitness_text(train, args.sample_chars, SAMPLE_CHUNKS)
     cost_params: CostParams = CostParams()
-    penalty: PenaltyParams = PenaltyParams()
+    penalty: PenaltyParams = PenaltyParams(confusion_s=args.confusion_s)
     costs: tuple[int, ...] = chord_costs(cost_params)
     horizon: float = args.horizon
     rival: Table = rival_table(train, costs)
@@ -128,7 +131,7 @@ def _evolve_command(args: argparse.Namespace) -> int:
     run_row: dict[str, Any] = {
         "type": "run",
         "format": "steno-zero/evolve-log",
-        "version": 1,
+        "version": 2,
         **dataclasses.asdict(params),
         "horizon": horizon,
         "sample_chars": args.sample_chars,
@@ -206,7 +209,7 @@ def _run(args: argparse.Namespace) -> int:
             args.out.write_text(table.to_json(), encoding="utf-8")
     else:
         table = Table.from_json(args.table.read_text(encoding="utf-8"))
-    score: Score = evaluate(text, table, costs, PenaltyParams(), args.horizon)
+    score: Score = evaluate(text, table, costs, PenaltyParams(confusion_s=args.confusion_s), args.horizon)
     print(_summary(score, len(table)))
     return 0
 

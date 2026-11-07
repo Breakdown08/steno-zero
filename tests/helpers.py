@@ -13,7 +13,7 @@ ROOT: Path = Path(__file__).resolve().parents[1]
 FRAGMENT_PATH: Path = ROOT / "tests" / "data" / "fragment.txt"
 BASE: dict[str, int] = {ALPHABET[i]: i + 1 for i in range(41)}
 GREEDY_EXTRA: dict[str, int] = {"аб": 72, "бв": 64, "ба": 96, "б ": 68, "аба": 136, "абв ": 160}
-SUMMARY_KEYS: set[str] = {"chars", "chords", "entries", "t_char", "memory", "total"}
+SUMMARY_KEYS: set[str] = {"chars", "chords", "entries", "t_char", "memory", "confusion", "total"}
 
 
 @functools.cache

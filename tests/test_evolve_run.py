@@ -59,6 +59,7 @@ def test_result_matches_evaluate() -> None:
     assert last.entries == len(res.best)
     assert last.t_char == res.score.t_char
     assert last.memory == res.score.memory
+    assert last.confusion == res.score.confusion
 
 
 def test_evaluations_counter() -> None:

@@ -51,6 +51,7 @@ class GenerationRecord:
     entries: int
     t_char: float
     memory: float
+    confusion: float
     record: bool
     evaluations: int
 
@@ -198,6 +199,7 @@ def _evolve(
             entries=len(best),
             t_char=best_score.t_char,
             memory=best_score.memory,
+            confusion=best_score.confusion,
             record=improved,
             evaluations=evaluations,
         )

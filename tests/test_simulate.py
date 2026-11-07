@@ -29,7 +29,8 @@ def test_working_example_evaluate() -> None:
     assert s.usage["аа"] == 1
     assert s.usage["а"] == 0
     assert s.memory == pytest.approx(7450.909090909091)
-    assert s.total == pytest.approx(7565.909090909091)
+    assert s.confusion == pytest.approx(2.0)
+    assert s.total == pytest.approx(7567.909090909091)
 
 
 def test_greedy_not_optimal() -> None:
@@ -94,4 +95,4 @@ def test_usage_consistent() -> None:
     assert set(s.usage) == set(t.entries)
     assert sum(s.usage.values()) == s.chords
     assert s.chords < len(text)  # multi-symbol pieces were used on real text
-    assert s.total == pytest.approx(1_000_000.0 * s.t_char + s.memory)
+    assert s.total == pytest.approx(1_000_000.0 * s.t_char + s.memory + s.confusion)

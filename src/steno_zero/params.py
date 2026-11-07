@@ -15,6 +15,8 @@ class PenaltyParams:
     entry_s: float = 60.0
     rarity_s: float = 120.0
     rarity_uses: float = 50.0
+    slip_prob: float = 0.002  # stub, not a measurement
+    confusion_s: float = 2.0  # stub, not a measurement; 0 switches the penalty off
 
 
 DEFAULT_HORIZON: float = 1_000_000.0
