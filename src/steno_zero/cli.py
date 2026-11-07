@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import IO, Any
 
-from steno_zero.chords import chord_costs
+from steno_zero.chords import check_max_keys, chord_costs
 from steno_zero.corpus import fetch_corpus, load_corpus, split_corpus
 from steno_zero.evolve import (
     SAMPLE_CHARS,
@@ -22,7 +22,7 @@ from steno_zero.evolve import (
     evolve,
     fitness_text,
 )
-from steno_zero.params import DEFAULT_HORIZON, CostParams, PenaltyParams
+from steno_zero.params import DEFAULT_HORIZON, DEFAULT_MAX_KEYS, CostParams, PenaltyParams
 from steno_zero.plot import plot_log
 from steno_zero.rival import rival_table
 from steno_zero.simulate import Score, evaluate
@@ -65,12 +65,14 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--horizon", type=float, default=DEFAULT_HORIZON)
         p.add_argument("--part", choices=["all", "train", "test"], default="all")
         p.add_argument("--confusion-s", type=float, default=PenaltyParams().confusion_s)
+        p.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
     rival.add_argument("--out", type=Path, default=None)
 
     evo: argparse.ArgumentParser = sub.add_parser("evolve", help="evolve a table from scratch")
     evo.add_argument("--corpus", type=Path, default=None)
     evo.add_argument("--horizon", type=float, default=DEFAULT_HORIZON)
     evo.add_argument("--confusion-s", type=float, default=PenaltyParams().confusion_s)
+    evo.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
     evo.add_argument("--seed", type=int, default=0)
     evo.add_argument("--population", type=int, default=EvolveParams().population)
     evo.add_argument("--generations", type=int, default=EvolveParams().generations)
@@ -92,6 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("--home-limit", type=int, default=HOME_LIMIT)
     export.add_argument("--exam-limit", type=int, default=EXAM_LIMIT)
     export.add_argument("--exam-size", type=int, default=EXAM_SIZE)
+    export.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
     export.add_argument("--out", type=Path, default=Path("docs/data.js"))
     stats: argparse.ArgumentParser = trainer_sub.add_parser("stats", help="statistics of exam logs")
     stats.add_argument("logs", type=Path, nargs="+", metavar="LOG")
@@ -114,6 +117,18 @@ def _read_text(corpus: Path | None, part: str) -> str:
     test: str
     train, test = split_corpus(text, 0.1)
     return train if part == "train" else test
+
+
+def _check_table(table: Table, max_keys: int, name: str | None = None) -> None:
+    over: list[str] = table.over_keys(max_keys)
+    if not over:
+        return
+    entries: dict[str, int] = table.entries
+    listed: str = ", ".join(f"{p!r} ({entries[p].bit_count()})" for p in over)
+    where: str = f"table {name!r}" if name is not None else "table"
+    raise ValueError(
+        f"{where} has chords with more than {max_keys} keys: {listed}; use --max-keys to raise the limit"
+    )
 
 
 def _summary(score: Score, entries: int) -> str:
@@ -140,7 +155,7 @@ def _generation_row(rec: GenerationRecord) -> dict[str, Any]:
 
 def _evolve_command(args: argparse.Namespace) -> int:
     params: EvolveParams = EvolveParams(
-        seed=args.seed, population=args.population, generations=args.generations
+        seed=args.seed, population=args.population, generations=args.generations, max_keys=args.max_keys
     )
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
@@ -153,14 +168,14 @@ def _evolve_command(args: argparse.Namespace) -> int:
     penalty: PenaltyParams = PenaltyParams(confusion_s=args.confusion_s)
     costs: tuple[int, ...] = chord_costs(cost_params)
     horizon: float = args.horizon
-    rival: Table = rival_table(train, costs)
+    rival: Table = rival_table(train, costs, params.max_keys)
     rival_total: float = evaluate(fit, rival, costs, penalty, horizon).total
     out: Path = args.out if args.out is not None else Path("runs") / f"seed-{args.seed}"
     out.mkdir(parents=True, exist_ok=True)
     run_row: dict[str, Any] = {
         "type": "run",
         "format": "steno-zero/evolve-log",
-        "version": 2,
+        "version": 3,
         **dataclasses.asdict(params),
         "horizon": horizon,
         "sample_chars": args.sample_chars,
@@ -221,6 +236,7 @@ def _plot_command(args: argparse.Namespace) -> int:
 
 
 def _trainer_export(args: argparse.Namespace) -> int:
+    check_max_keys(args.max_keys)
     tables: list[tuple[str, Table]] = []
     spec: str
     for spec in args.table:
@@ -230,7 +246,9 @@ def _trainer_export(args: argparse.Namespace) -> int:
         name, sep, path = spec.partition("=")
         if sep == "":
             raise ValueError(f"--table {spec!r}: expected NAME=PATH")
-        tables.append((name, Table.from_json(Path(path).read_text(encoding="utf-8"))))
+        table: Table = Table.from_json(Path(path).read_text(encoding="utf-8"))
+        _check_table(table, args.max_keys, name)
+        tables.append((name, table))
     text: str = _read_text(args.corpus, "all")
     home: list[str]
     exam: list[str]
@@ -286,16 +304,18 @@ def _run(args: argparse.Namespace) -> int:
         return _plot_command(args)
     if args.command == "trainer":
         return _trainer_export(args) if args.trainer_command == "export" else _trainer_stats(args)
+    check_max_keys(args.max_keys)
+    table: Table
+    if args.command == "evaluate":
+        table = Table.from_json(args.table.read_text(encoding="utf-8"))
+        _check_table(table, args.max_keys)
     text: str = _read_text(args.corpus, args.part)
     costs: tuple[int, ...] = chord_costs(CostParams())
-    table: Table
     if args.command == "rival":
-        table = rival_table(text, costs)
+        table = rival_table(text, costs, args.max_keys)
         if args.out is not None:
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(table.to_json(), encoding="utf-8")
-    else:
-        table = Table.from_json(args.table.read_text(encoding="utf-8"))
     score: Score = evaluate(text, table, costs, PenaltyParams(confusion_s=args.confusion_s), args.horizon)
     print(_summary(score, len(table)))
     return 0

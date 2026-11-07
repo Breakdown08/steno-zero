@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from steno_zero.alphabet import ALPHABET
-from steno_zero.chords import N_CHORDS
-from steno_zero.params import MAX_PIECE_LEN, PenaltyParams
+from steno_zero.chords import allowed_chords, check_max_keys
+from steno_zero.params import DEFAULT_MAX_KEYS, MAX_PIECE_LEN, PenaltyParams
 from steno_zero.simulate import Score, evaluate
 from steno_zero.table import Table
 
@@ -26,6 +26,7 @@ class EvolveParams:
     tournament: int = 5
     init_extra: int = 20
     max_mutations: int = 3
+    max_keys: int = DEFAULT_MAX_KEYS
 
     def __post_init__(self) -> None:
         if self.population < 2:
@@ -40,6 +41,7 @@ class EvolveParams:
             raise ValueError("init_extra must not be negative")
         if self.max_mutations < 1:
             raise ValueError("max_mutations must be at least 1")
+        check_max_keys(self.max_keys)
 
 
 @dataclass(frozen=True)
@@ -85,38 +87,39 @@ def draw_piece(text: str, rng: random.Random) -> str:
     return text[i : i + length]
 
 
-def _free_chords(entries: dict[str, int]) -> list[int]:
+def _free_chords(entries: dict[str, int], max_keys: int) -> list[int]:
     used: set[int] = set(entries.values())
-    return [c for c in range(1, N_CHORDS + 1) if c not in used]
+    return [c for c in allowed_chords(max_keys) if c not in used]
 
 
-def _add(entries: dict[str, int], text: str, rng: random.Random) -> None:
+def _add(entries: dict[str, int], text: str, rng: random.Random, max_keys: int) -> None:
     piece: str = draw_piece(text, rng)
     if piece in entries:
         return
-    free: list[int] = _free_chords(entries)
+    free: list[int] = _free_chords(entries, max_keys)
     if free:
         entries[piece] = rng.choice(free)
 
 
-def random_table(text: str, rng: random.Random, extra: int) -> Table:
+def random_table(text: str, rng: random.Random, extra: int, max_keys: int = DEFAULT_MAX_KEYS) -> Table:
     if extra < 0:
         raise ValueError("extra must not be negative")
-    chords: list[int] = rng.sample(range(1, N_CHORDS + 1), len(ALPHABET))
+    chords: list[int] = rng.sample(allowed_chords(max_keys), len(ALPHABET))
     entries: dict[str, int] = dict(zip(ALPHABET, chords, strict=True))
     i: int
     for i in range(rng.randint(0, extra)):  # noqa: B007
-        _add(entries, text, rng)
+        _add(entries, text, rng, max_keys)
     return Table(entries)
 
 
-def mutate(table: Table, kind: str, text: str, rng: random.Random) -> Table:
+def mutate(table: Table, kind: str, text: str, rng: random.Random, max_keys: int = DEFAULT_MAX_KEYS) -> Table:
     if kind not in MUTATIONS:
         raise ValueError(f"unknown mutation {kind!r}")
+    check_max_keys(max_keys)
     entries: dict[str, int] = table.entries
     pieces: list[str] = list(entries)
     if kind == "add":
-        _add(entries, text, rng)
+        _add(entries, text, rng, max_keys)
     elif kind == "remove":
         long: list[str] = [p for p in pieces if len(p) >= 2]
         if not long:
@@ -128,7 +131,7 @@ def mutate(table: Table, kind: str, text: str, rng: random.Random) -> Table:
         a, b = rng.sample(pieces, 2)
         entries[a], entries[b] = entries[b], entries[a]
     else:
-        free: list[int] = _free_chords(entries)
+        free: list[int] = _free_chords(entries, max_keys)
         if not free:
             return table
         entries[rng.choice(pieces)] = rng.choice(free)
@@ -161,7 +164,9 @@ def _evolve(
     on_generation: Callable[[GenerationRecord], None] | None,
 ) -> EvolveResult:
     rng: random.Random = random.Random(params.seed)
-    pop: list[Table] = [random_table(text, rng, params.init_extra) for _ in range(params.population)]
+    pop: list[Table] = [
+        random_table(text, rng, params.init_extra, params.max_keys) for _ in range(params.population)
+    ]
     prev: dict[Table, Score] = {}
     best: Table | None = None
     best_score: Score | None = None
@@ -216,7 +221,7 @@ def _evolve(
             n: int
             for n in range(rng.randint(1, params.max_mutations)):  # noqa: B007
                 kind = rng.choice(MUTATIONS)
-                parent = mutate(parent, kind, text, rng)
+                parent = mutate(parent, kind, text, rng, params.max_keys)
             nxt.append(parent)
         prev = cache
         pop = nxt

@@ -22,7 +22,7 @@ from tests.helpers import FRAGMENT_PATH, ROOT, fragment
 
 RUN_KEYS: list[str] = [
     "type", "format", "version", "seed", "population", "generations", "elite", "tournament",
-    "init_extra", "max_mutations", "horizon", "sample_chars", "sample_chunks", "text_sha256",
+    "init_extra", "max_mutations", "max_keys", "horizon", "sample_chars", "sample_chunks", "text_sha256",
     "train_chars", "test_chars", "fit_chars", "cost_params", "penalty_params", "rival_total",
 ]  # fmt: skip
 GEN_KEYS: list[str] = [
@@ -96,7 +96,7 @@ def test_log_structure(evolved: tuple[Path, int, str]) -> None:
 def test_log_run_row_content(evolved: tuple[Path, int, str]) -> None:
     run: dict[str, Any] = log_lines(evolved[0])[0]
     assert run["format"] == "steno-zero/evolve-log"
-    assert run["version"] == 2
+    assert run["version"] == 3
     assert run["text_sha256"] == hashlib.sha256(fragment().encode("utf-8")).hexdigest()
     train: str
     test: str

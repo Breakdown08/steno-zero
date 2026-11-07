@@ -31,3 +31,13 @@ def chord_costs(params: CostParams) -> tuple[int, ...]:
             params.base_ms + params.extra_key_ms * (len(keys) - 1) + sum(params.finger_ms[k] for k in keys)
         )
     return tuple(costs)
+
+
+def check_max_keys(max_keys: int) -> None:
+    if not 2 <= max_keys <= N_KEYS:
+        raise ValueError(f"max_keys must be in 2..{N_KEYS}: {max_keys}")
+
+
+def allowed_chords(max_keys: int) -> tuple[int, ...]:
+    check_max_keys(max_keys)
+    return tuple(c for c in range(1, N_CHORDS + 1) if c.bit_count() <= max_keys)

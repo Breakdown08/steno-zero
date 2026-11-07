@@ -3,7 +3,8 @@
 from collections.abc import Sequence
 
 from steno_zero.alphabet import ALPHABET
-from steno_zero.chords import N_CHORDS
+from steno_zero.chords import allowed_chords
+from steno_zero.params import DEFAULT_MAX_KEYS
 from steno_zero.table import Table
 
 
@@ -29,9 +30,9 @@ def optimal_assignment(weights: Sequence[int], options: Sequence[tuple[int, int]
     return result
 
 
-def rival_table(text: str, costs: Sequence[int]) -> Table:
+def rival_table(text: str, costs: Sequence[int], max_keys: int = DEFAULT_MAX_KEYS) -> Table:
     counts: dict[str, int] = symbol_counts(text)
     symbols: list[str] = list(counts)
-    options: list[tuple[int, int]] = [(c, costs[c]) for c in range(1, N_CHORDS + 1)]
+    options: list[tuple[int, int]] = [(c, costs[c]) for c in allowed_chords(max_keys)]
     chords: list[int] = optimal_assignment([counts[s] for s in symbols], options)
     return Table(dict(zip(symbols, chords, strict=True)))

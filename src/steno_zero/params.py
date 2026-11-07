@@ -19,5 +19,6 @@ class PenaltyParams:
     confusion_s: float = 2.0  # stub, not a measurement; 0 switches the penalty off
 
 
+DEFAULT_MAX_KEYS: int = 6  # measured: the keyboards at hand pass at most 6 keys held together
 DEFAULT_HORIZON: float = 1_000_000.0
 MAX_PIECE_LEN: int = 8

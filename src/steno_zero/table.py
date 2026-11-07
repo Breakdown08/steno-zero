@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from steno_zero.alphabet import ALPHABET
-from steno_zero.chords import N_CHORDS
+from steno_zero.chords import N_CHORDS, check_max_keys
 from steno_zero.params import MAX_PIECE_LEN
 
 FORMAT: str = "steno-zero/table"
@@ -48,6 +48,10 @@ class Table:
 
     def piece(self, chord: int) -> str:
         return self._by_chord[chord]
+
+    def over_keys(self, max_keys: int) -> list[str]:
+        check_max_keys(max_keys)
+        return [p for p, c in sorted(self.entries.items(), key=lambda e: e[1]) if c.bit_count() > max_keys]
 
     def max_len(self) -> int:
         return self._max_len
