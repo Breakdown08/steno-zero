@@ -7,12 +7,22 @@ import json
 import os
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
 from steno_zero.chords import check_max_keys, chord_costs
 from steno_zero.corpus import fetch_corpus, load_corpus, split_corpus
+from steno_zero.drill import (
+    DRILL_BLOCKS,
+    DRILL_SEED,
+    DRILL_SIZE,
+    DrillLog,
+    drill_data,
+    drill_strata,
+    read_drill_log,
+    write_drill_js,
+)
 from steno_zero.evolve import (
     SAMPLE_CHARS,
     SAMPLE_CHUNKS,
@@ -21,6 +31,16 @@ from steno_zero.evolve import (
     GenerationRecord,
     evolve,
     fitness_text,
+)
+from steno_zero.keyboard import (
+    KEYBOARDS_DIR,
+    CalibrationLog,
+    KeyboardProfile,
+    available_chords,
+    build_profile,
+    profile_json,
+    read_calibration_log,
+    read_profile,
 )
 from steno_zero.params import DEFAULT_HORIZON, DEFAULT_MAX_KEYS, CostParams, PenaltyParams
 from steno_zero.plot import plot_log
@@ -35,6 +55,7 @@ from steno_zero.trainer import (
     PHRASE_MIN_LEN,
     TrainerLog,
     TrainerStats,
+    chord_label,
     read_trainer_log,
     split_phrases,
     trainer_data,
@@ -99,6 +120,35 @@ def _build_parser() -> argparse.ArgumentParser:
     stats: argparse.ArgumentParser = trainer_sub.add_parser("stats", help="statistics of exam logs")
     stats.add_argument("logs", type=Path, nargs="+", metavar="LOG")
     stats.add_argument("--out", type=Path, default=None)
+    drill: argparse.ArgumentParser = trainer_sub.add_parser("drill", help="build docs/drill.js")
+    drill.add_argument("--seed", type=int, default=DRILL_SEED)
+    drill.add_argument("--blocks", type=int, default=DRILL_BLOCKS)
+    drill.add_argument("--size", type=int, default=DRILL_SIZE)
+    drill.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
+    drill.add_argument("--keyboard", type=Path, default=None, metavar="PROFILE")
+    drill.add_argument("--out", type=Path, default=Path("docs/drill.js"))
+
+    keyboard: argparse.ArgumentParser = sub.add_parser("keyboard", help="keyboard calibration")
+    keyboard_sub: Any = keyboard.add_subparsers(dest="keyboard_command", required=True)
+    profile: argparse.ArgumentParser = keyboard_sub.add_parser("profile", help="build a keyboard profile")
+    profile.add_argument("log", type=Path, metavar="LOG")
+    profile.add_argument("--name", required=True)
+    profile.add_argument("--out", type=Path, default=None)
+    profile.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
+
+    price: argparse.ArgumentParser = sub.add_parser("price", help="chord prices from measurements")
+    price_sub: Any = price.add_subparsers(dest="price_command", required=True)
+    pfit: argparse.ArgumentParser = price_sub.add_parser("fit", help="fit chord prices to drill logs")
+    pfit.add_argument("logs", type=Path, nargs="+", metavar="LOG")
+    pfit.add_argument("--keyboard", type=Path, default=None, metavar="PROFILE")
+    pfit.add_argument("--out", type=Path, default=Path("runs/price"))
+    pfit.add_argument("--target", choices=["total", "motor"], default="total")
+    pfit.add_argument("--model", choices=["auto", "baseline", "ridge", "boosting"], default="auto")
+    pfit.add_argument("--folds", type=int, default=5)
+    pfit.add_argument("--seed", type=int, default=0)
+    pfit.add_argument("--skip-first", type=int, default=5)
+    pfit.add_argument("--max-ms", type=float, default=5000.0)
+    pfit.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
     return parser
 
 
@@ -294,6 +344,96 @@ def _trainer_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _trainer_drill(args: argparse.Namespace) -> int:
+    profile: KeyboardProfile | None = None
+    if args.keyboard is not None:
+        profile = _read_with_name(args.keyboard, read_profile)
+    data: dict[str, Any] = drill_data(args.seed, args.blocks, args.size, args.max_keys, profile)
+    write_drill_js(data, args.out)
+    print(
+        _dump(
+            {
+                "out": str(args.out),
+                "seed": args.seed,
+                "blocks": args.blocks,
+                "size": args.size,
+                "max_keys": args.max_keys,
+                "keyboard": None if profile is None else profile.name,
+                "available": data["available"],
+                "chords": len({c for block in data["blocks"] for c in block}),
+                "strata": len(drill_strata(args.max_keys, profile)),
+            }
+        )
+    )
+    return 0
+
+
+def _read_with_name[T](path: Path, read: Callable[[str], T]) -> T:
+    try:
+        return read(path.read_text(encoding="utf-8"))
+    except OSError:
+        raise
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _keyboard_command(args: argparse.Namespace) -> int:
+    log: CalibrationLog = _read_with_name(args.log, read_calibration_log)
+    profile: KeyboardProfile = build_profile(log, args.name)
+    check_max_keys(args.max_keys)
+    out: Path = args.out if args.out is not None else KEYBOARDS_DIR / f"{args.name}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(profile_json(profile), encoding="utf-8", newline="\n")
+    print(
+        _dump(
+            {
+                "out": str(out),
+                "name": profile.name,
+                "blocked": [chord_label(b.chord) for b in profile.blocked],
+                "unclear": [chord_label(b.chord) for b in profile.blocked if b.unclear],
+                "available": len(available_chords(args.max_keys, profile)),
+            }
+        )
+    )
+    return 0
+
+
+def _price_command(args: argparse.Namespace) -> int:
+    from steno_zero.price import PriceFit, fit_prices, presentations_frame
+
+    logs: list[DrillLog] = [_read_with_name(p, read_drill_log) for p in args.logs]
+    profile: KeyboardProfile | None = None
+    if args.keyboard is not None:
+        profile = _read_with_name(args.keyboard, read_profile)
+    frame: Any = presentations_frame(logs, args.skip_first)
+    result: PriceFit = fit_prices(
+        frame, args.target, args.model, args.max_keys, args.folds, args.seed, args.max_ms, profile
+    )
+    args.out.mkdir(parents=True, exist_ok=True)
+    name: str
+    obj: dict[str, Any]
+    for name, obj in (("prices.json", result.prices), ("report.json", result.report)):
+        text: str = json.dumps(obj, ensure_ascii=False, indent=1) + "\n"
+        (args.out / name).write_text(text, encoding="utf-8", newline="\n")
+    time: dict[str, dict[str, Any]] = result.report["time"]
+    print(
+        _dump(
+            {
+                "out": str(args.out),
+                "rows": result.report["rows"],
+                "time_rows": result.report["time_rows"],
+                "chords_seen": result.report["chords_seen"],
+                "chosen": result.report["chosen"],
+                "mae_ms": {m: time[m]["mae_ms"] for m in time},
+                "miss_model": result.prices["miss_model"],
+                "keyboard": None if profile is None else profile.name,
+                "suspects": len(result.report["suspect_chords"]),
+            }
+        )
+    )
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.command == "corpus":
         print(fetch_corpus(args.sources, args.out))
@@ -303,7 +443,13 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "plot":
         return _plot_command(args)
     if args.command == "trainer":
+        if args.trainer_command == "drill":
+            return _trainer_drill(args)
         return _trainer_export(args) if args.trainer_command == "export" else _trainer_stats(args)
+    if args.command == "keyboard":
+        return _keyboard_command(args)
+    if args.command == "price":
+        return _price_command(args)
     check_max_keys(args.max_keys)
     table: Table
     if args.command == "evaluate":

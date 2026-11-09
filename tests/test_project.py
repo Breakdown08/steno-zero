@@ -1,5 +1,6 @@
 """Checks 3-6: project files."""
 
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -52,8 +53,8 @@ def test_pyproject_metadata() -> None:
     project: dict[str, Any] = data["project"]
     assert project["license"] == "Apache-2.0"
     deps: list[str] = project["dependencies"]
-    assert len(deps) == 1
-    assert deps[0].startswith("matplotlib")
+    names: set[str] = {re.split(r"[<>=!~ \[]", d, maxsplit=1)[0] for d in deps}
+    assert names == {"matplotlib", "numpy", "pandas", "scikit-learn"}
     assert project["requires-python"] == ">=3.14"
 
 
@@ -61,3 +62,13 @@ def test_runs_dir_is_ignored() -> None:
     assert git_ignored("runs/seed-0/log.jsonl") == 0
     assert git_ignored("data/corpus/classics.txt") == 0
     assert git_ignored("data/corpus/sources.json") == 1
+
+
+def test_dev_group_and_mypy_override_for_the_new_libraries() -> None:
+    data: dict[str, Any] = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev: list[str] = data["dependency-groups"]["dev"]
+    assert any(d.startswith("pandas-stubs") for d in dev)
+    overrides: list[dict[str, Any]] = data["tool"]["mypy"]["overrides"]
+    sklearn: list[dict[str, Any]] = [o for o in overrides if "sklearn.*" in o["module"]]
+    assert len(sklearn) == 1
+    assert sklearn[0]["ignore_missing_imports"] is True

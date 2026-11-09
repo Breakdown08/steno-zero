@@ -125,13 +125,50 @@ uv run steno-zero trainer stats runs/trainer/*.json --out runs/trainer/stats.jso
 
 `trainer stats` prints one JSON line per session (time, symbols per minute, misses) and a summary line (misses by a neighbouring chord or otherwise, `slip_prob`, the median interval between clean consecutive chords). With `--out` the file also holds the time and the misses of every chord. `slip_prob` is the neighbour misses divided by the number of neighbours of all targets, the same quantity as `PenaltyParams.slip_prob`. These numbers are measurements of one person on one keyboard: a keyboard may lose keys pressed together (the page shows the largest number held at once; the three keyboards checked pass at most 6, hence the default `K = 6`), and the figures are not a general property of chords.
 
+### Calibration and random chords
+
+The exam measures only the 41-159 chords of one table, but a price model has to cover every chord the keyboard can type. So the page has two more modes, both written to separate logs.
+
+**Keyboard facts.** The laptop passes at most 6 keys held together, and its matrix has no diodes, so some triples are swallowed: with `f v` held, `k` (also `l`, `;`) never reaches the kernel, while `f v j` passes. A keyboard on Vial sees all 10 keys in the matrix but hands the browser at most 6 (a 6KRO report). A swallowed key looks in a log exactly like a human slip (the same chord without one key), so the keyboard is calibrated once before any measurement.
+
+**Calibration** ("Калибровка клавиатуры"): the 45 pairs and 120 triples, each up to three attempts (about 5-6 minutes), and the page saves a `steno-zero/keyboard-calibration` log. Then
+
+```
+uv run steno-zero keyboard profile calibration.json --name laptop   # writes data/keyboards/laptop.json
+```
+
+builds a **keyboard profile**, the list of unavailable combinations. A combination that never passed is blocked; only minimal blocked combinations are kept (a triple holding a blocked pair is not listed), and `unclear` marks one where an extra key arrived at least once (it may be a human slip, but it is excluded anyway; calibrate again and compare). A matrix without diodes blocks three keys in three corners of a rectangle, so a chord is unavailable exactly when it holds a blocked pair or triple; this is an assumption about the firmware, not a checked fact, and `price fit` lists suspicious chords as a safety net. The profile file is committed (`data/keyboards/`, no user agent in it) and is read by `read_profile`, which accepts blocked combinations of any length >= 2, so a suspicious chord can be added by hand. `--max-keys` only changes the `available` number of the summary.
+
+**Random chords** ("Случайные аккорды"): the page shows a chord on a ten-key scheme with its label, you press it, and the page writes the time and the miss. A miss is not repeated: the wrong chord flashes red and the next one comes at once. The sequence is built in Python and played by the page, so all checked logic stays out of JS:
+
+```
+uv run steno-zero trainer drill --keyboard data/keyboards/laptop.json   # writes docs/drill.js
+```
+
+`docs/drill.js` holds 100 blocks of 100 chords (seed 0, `--max-keys 6`), the keyboard name with its SHA-256 and the calibration queue, and is rebuilt byte for byte from these parameters and the profile in `data/keyboards/`. The committed file is built without a profile until the laptop is calibrated; the page then warns that chords swallowed by the keyboard will give false misses. The sampling is deliberately not uniform over chords: every block is balanced by the number of keys, then by the number of keys on the left hand, and inside a stratum chords come from a shuffled deck, so one-handed chords with many keys are measured too (small strata repeat often by design). Only available chords are drawn and no chord repeats in a row. `index.html?block=N` replays block `N`; otherwise a block is random.
+
+A block log has the format `steno-zero/drill-log`, version 1: session `drill-<block>-<start>`, seed, block, `max_keys`, the keyboard (`name`, `sha256`, or `null`), start and finish, user agent, the largest number of keys held and one record `i, target, typed, shown_ms, down_ms, up_ms` per chord (`performance.now()` times; `shown_ms` is taken when the scheme is already in the page).
+
+## Chord prices
+
+```
+uv run steno-zero price fit runs/drill/*.json --keyboard data/keyboards/laptop.json --out runs/price
+```
+
+`price fit` reads the logs of random chords into a pandas table (one row per presentation, the first 5 of each session dropped as warm-up) and writes `prices.json` and `report.json`. Features of a chord (19): the number of keys, keys per hand, both hands, one flag per key, both index keys of a hand, adjacent pressed keys, the finger span and the finger holes per hand, and a mirrored left/right shape. The target is `total` (release minus display) or `motor` (release minus first press); a miss is not a time, and slower rows than `--max-ms` are dropped.
+
+The baseline (the mean time by the number of keys), Ridge and gradient boosting are compared by 5-fold `GroupKFold` **by chord**, so every score is for chords the model has not seen. Metrics: MAE, R2 and the mean per-chord error. The miss probability is compared in the same way (a smoothed rate by the number of keys against logistic regression, log loss and Brier score). `auto` picks the model with the smallest MAE. `prices.json` lists **all** chords allowed by `--max-keys`; the chords unavailable on the keyboard profile have `available: false` and `null` time and miss probability. `report.json` also has the Ridge coefficients, per-session medians (drift) and `suspect_chords`: chords whose presentations all missed, each time with a strict subset of the keys, which may be a key the keyboard swallows and is not in the profile.
+
+Logs taken on different profiles (or some with and some without) are never mixed, and the profile given to `--keyboard` must be the one recorded in the logs. The human slip and a swallowed key cannot be told apart from a log alone, which is why the profile exists. On synthetic data with a known dependence Ridge recovers it and beats the baseline several times over (the tests check it); **there are no numbers from live measurements yet**, and the prices are not connected to the evolution. The time of a random chord includes recognising the scheme, which fluent typing does not have, so it is not yet an absolute price.
+
 ## Not supported
 
 - Crossover of tables and resuming an interrupted run.
 - The neural network.
-- Chord prices that depend on the previous chord, slips of more than one key, per-finger slip rates, measured slip rates, measured prices.
+- Chord prices that depend on the previous chord, slips of more than one key, per-finger slip rates, measured slip rates, measured prices (the `price fit` model exists, but there are no live measurements and nothing feeds them to the evolution), calibration of drill times to fluent typing.
 - Memory penalty stages beyond a per-entry cost with a rarity surcharge.
-- Free typing with backspace in the trainer, a random-chord mode, an estimate of `confusion_s` and measurements in the home mode.
+- Free typing with backspace in the trainer, an estimate of `confusion_s` and measurements in the home mode.
+- Key-blocking check beyond pairs and triples, and an evolution that avoids chords blocked by a keyboard profile.
 - Capital letters, digits, quotes, brackets, Latin letters and line breaks: normalisation drops them.
 
 ## License

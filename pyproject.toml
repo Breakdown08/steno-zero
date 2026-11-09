@@ -8,13 +8,24 @@ version = "0.1.0"
 requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = ["matplotlib>=3.10"]
+dependencies = [
+    "matplotlib>=3.10",
+    "numpy>=2.2",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+]
 
 [project.scripts]
 steno-zero = "steno_zero.cli:main"
 
 [dependency-groups]
-dev = ["mypy", "pytest", "ruff", "ty"]
+dev = [
+    "mypy",
+    "pandas-stubs>=3.1.0.261029",
+    "pytest",
+    "ruff",
+    "ty",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/steno_zero"]
@@ -33,3 +44,7 @@ select = ["E", "F", "I", "B", "UP", "ANN"]
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn", "sklearn.*"]
+ignore_missing_imports = true

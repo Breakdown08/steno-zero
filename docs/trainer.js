@@ -1,7 +1,12 @@
 // steno-zero trainer. All data and layout come from window.STENO_ZERO_DATA (see docs/data.js).
+// The random-chord plan and the calibration queue come from window.STENO_ZERO_DRILL (docs/drill.js):
+// the page only plays them, everything that needs checking is built in Python.
 (function () {
   "use strict";
   var D = window.STENO_ZERO_DATA;
+  var P = window.STENO_ZERO_DRILL || null;
+  var CALIBRATION_ATTEMPTS = 3;
+  var WRONG_FLASH_MS = 600;
   var FINGERS = [
     "л. мизинец", "л. безымянный", "л. средний", "л. указательный", "л. указательный, вниз",
     "пр. указательный, вниз", "пр. указательный", "пр. средний", "пр. безымянный", "пр. мизинец"
@@ -12,15 +17,20 @@
     phrase: $("phrase"), hint: $("hint"), hintSwitch: $("hint-switch"), hintOn: $("hint-on"),
     field: $("field"), help: $("help"), layout: $("layout"), entries: $("entries"),
     left: $("left"), right: $("right"), held: $("held"),
+    drill: $("drill"), calibrate: $("calibrate"), keyboard: $("keyboard"), note: $("note"),
+    target: $("target"), targetLeft: $("target-left"), targetRight: $("target-right"),
+    targetLabel: $("target-label"), targetNote: $("target-note"),
     result: $("result"), summary: $("summary"), download: $("download"), home: $("home")
   };
 
   var bitOf = {};            // KeyboardEvent.code -> chord bit
   var boxes = [];
+  var targetBoxes = [];
+  var flashTimer = null;
   D.keys.forEach(function (k, i) { bitOf[k.code] = 1 << i; });
 
   var state = {
-    mode: "home",            // "home" | "exam"
+    mode: "home",            // "home" | "exam" | "drill" | "calibrate"
     table: D.tables[0],
     labelOf: {},             // chord -> label, for the current table
     pieceOf: {},             // chord -> piece
@@ -35,7 +45,8 @@
     maxHeld: 0,
     chords: 0,
     misses: 0,
-    exam: null               // exam state, see startExam
+    exam: null,              // exam state, see startExam
+    run: null                // random-chord or calibration state, see startDrill and startCalibration
   };
 
   function show(piece) { return piece.replace(/ /g, "␣"); }
@@ -131,6 +142,11 @@
       b.textContent = k.label;
       boxes.push(b);
       (i < 5 ? el.left : el.right).appendChild(b);
+      var t = document.createElement("div");
+      t.className = "key";
+      t.textContent = k.label;
+      targetBoxes.push(t);
+      (i < 5 ? el.targetLeft : el.targetRight).appendChild(t);
     });
     el.layout.textContent = "";
     D.keys.forEach(function (k, i) {
@@ -153,6 +169,8 @@
   // ---- chords
 
   function onChord(typed) {
+    if (state.mode === "drill") { onDrillChord(typed); return; }
+    if (state.mode === "calibrate") { onCalibrationChord(typed); return; }
     var exam = state.mode === "exam" ? state.exam : null;
     if (exam && exam.finished) return;
     var target = state.segs[state.pos][1];
@@ -199,6 +217,7 @@
     e.preventDefault();
     if (e.repeat) return;
     if (state.mode === "exam" && state.exam.finished) return;
+    if (state.run && state.run.finished) return;
     if (!Object.keys(state.down).length) state.chordDown = performance.now();
     if (state.mode === "exam" && state.exam.t0 === null) state.exam.t0 = state.chordDown;
     state.down[e.code] = true;
@@ -315,6 +334,8 @@
   function goHome() {
     if (state.exam) clearInterval(state.exam.timer);
     state.exam = null;
+    state.run = null;
+    clearFlash();
     state.mode = "home";
     state.chords = 0;
     state.misses = 0;
@@ -327,28 +348,216 @@
     layoutMode();
   }
 
+  // ---- random chords and calibration (the plan and the queue come from drill.js)
+
+  function labelOfChord(chord) {
+    return D.keys.filter(function (_, i) { return chord >> i & 1; })
+      .map(function (k) { return k.label; }).join(" ");
+  }
+
+  function showTarget(chord) {
+    targetBoxes.forEach(function (b, i) { b.className = chord >> i & 1 ? "key on" : "key"; });
+    el.targetLabel.textContent = labelOfChord(chord);
+  }
+
+  function clearFlash() {
+    if (flashTimer !== null) clearTimeout(flashTimer);
+    flashTimer = null;
+    el.targetNote.textContent = "";
+  }
+
+  function flashWrong(typed) {
+    clearFlash();
+    el.targetNote.textContent = labelOfChord(typed);
+    flashTimer = setTimeout(clearFlash, WRONG_FLASH_MS);
+  }
+
+  function resetInput() {
+    state.chords = 0;
+    state.misses = 0;
+    state.maxHeld = 0;
+    state.down = {};
+    state.chord = 0;
+    renderHeld();
+    el.help.open = false;
+  }
+
+  function runTitle() {
+    var r = state.run;
+    if (state.mode === "drill") {
+      return "Случайные аккорды — блок " + r.block + ", " +
+        Math.min(r.k + 1, r.order.length) + " из " + r.order.length;
+    }
+    return "Калибровка — осталось " + r.queue.length;
+  }
+
+  function startDrill() {
+    if (!P) return;
+    var wanted = parseInt(new URLSearchParams(window.location.search).get("block"), 10);
+    var block = wanted >= 0 && wanted < P.blocks.length ? wanted : Math.floor(Math.random() * P.blocks.length);
+    var started = new Date().toISOString();
+    state.mode = "drill";
+    state.run = {
+      kind: "drill", block: block, order: P.blocks[block], k: 0, rows: [], shownAt: 0,
+      started: started, finished: false, finishedAt: "", downloaded: false,
+      session: "drill-" + block + "-" + started.replace(/:/g, "-")
+    };
+    resetInput();
+    el.keyboard.textContent = P.keyboard
+      ? "клавиатура: " + P.keyboard.name
+      : "план без профиля клавиатуры: заглушённые клавиатурой аккорды дадут ложные промахи";
+    el.keyboard.className = P.keyboard ? "" : "warn";
+    layoutMode();
+    showDrillChord();
+  }
+
+  function showDrillChord() {
+    var r = state.run;
+    showTarget(r.order[r.k]);
+    el.status.textContent = "";
+    r.shownAt = performance.now();
+  }
+
+  function onDrillChord(typed) {
+    var r = state.run;
+    if (r.finished) return;
+    var target = r.order[r.k];
+    var upMs = performance.now();
+    r.rows.push({
+      i: r.k, target: target, typed: typed, shown_ms: r.shownAt,
+      down_ms: Math.max(state.chordDown, r.shownAt), up_ms: upMs
+    });
+    state.chords++;
+    if (typed !== target) { state.misses++; flashWrong(typed); } else { clearFlash(); }
+    r.k++;
+    if (r.k < r.order.length) { layoutMode(); showDrillChord(); return; }
+    r.finished = true;
+    r.finishedAt = new Date().toISOString();
+    layoutMode();
+    showDrillResult();
+  }
+
+  function showDrillResult() {
+    var r = state.run;
+    var times = r.rows.filter(function (x) { return x.typed === x.target; })
+      .map(function (x) { return x.up_ms - x.shown_ms; }).sort(function (a, b) { return a - b; });
+    var m = times.length;
+    var median = m === 0 ? null : (times[(m - 1) >> 1] + times[m >> 1]) / 2;
+    el.summary.textContent = "Медиана: " + (median === null ? "—" : median.toFixed(0) + " мс") +
+      "; промахов: " + state.misses + " из " + r.rows.length +
+      "; максимум одновременно: " + state.maxHeld;
+  }
+
+  function startCalibration() {
+    if (!P) return;
+    var started = new Date().toISOString();
+    state.mode = "calibrate";
+    state.run = {
+      kind: "calibrate", queue: P.calibration.slice(), tries: {}, failed: [], attempts: [],
+      started: started, finished: false, finishedAt: "", downloaded: false,
+      session: "calibration-" + started.replace(/:/g, "-")
+    };
+    resetInput();
+    el.note.textContent = "нажмите показанные клавиши вместе; если сочетание не проходит, " +
+      "это может быть клавиатура";
+    layoutMode();
+    showTarget(state.run.queue[0]);
+    renderCalibrationStatus();
+  }
+
+  function renderCalibrationStatus() {
+    var r = state.run;
+    el.status.textContent = "осталось: " + r.queue.length + ", не прошло: " + r.failed.length;
+  }
+
+  function onCalibrationChord(typed) {
+    var r = state.run;
+    if (r.finished) return;
+    var target = r.queue.shift();
+    r.attempts.push({ target: target, typed: typed, down_ms: state.chordDown, up_ms: performance.now() });
+    r.tries[target] = (r.tries[target] || 0) + 1;
+    if (typed !== target) {
+      if (r.tries[target] < CALIBRATION_ATTEMPTS) r.queue.push(target); else r.failed.push(target);
+    }
+    if (r.queue.length) {
+      layoutMode();
+      showTarget(r.queue[0]);
+      renderCalibrationStatus();
+      return;
+    }
+    r.finished = true;
+    r.finishedAt = new Date().toISOString();
+    layoutMode();
+    el.status.textContent = "";
+    el.summary.textContent = "Не прошли: " +
+      (r.failed.length ? r.failed.map(labelOfChord).join(", ") : "нет") +
+      "; максимум одновременно: " + state.maxHeld;
+  }
+
+  function buildRunLog() {
+    var r = state.run;
+    var common = {
+      version: 1, session: r.session, started: r.started, finished: r.finishedAt,
+      user_agent: navigator.userAgent, max_held: state.maxHeld
+    };
+    if (r.kind === "calibrate") {
+      return Object.assign({ format: "steno-zero/keyboard-calibration" }, common, { attempts: r.attempts });
+    }
+    return Object.assign({ format: "steno-zero/drill-log" }, common, {
+      seed: P.seed, block: r.block, max_keys: P.max_keys,
+      keyboard: P.keyboard ? { name: P.keyboard.name, sha256: P.keyboard.sha256 } : null,
+      presentations: r.rows
+    });
+  }
+
+  function downloadRun() {
+    var blob = new Blob([JSON.stringify(buildRunLog(), null, 1) + "\n"], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "steno-zero-" + state.run.session + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    state.run.downloaded = true;
+  }
+
   function layoutMode() {
     var exam = state.mode === "exam";
+    var other = state.mode === "drill" || state.mode === "calibrate";
+    var home = state.mode === "home";
+    var x = exam ? state.exam : (other ? state.run : null);
     el.title.textContent = exam
       ? "Экзамен — фраза " + Math.min(state.exam.k + 1, state.exam.order.length) + " из " + state.exam.order.length
-      : "Тренировка";
-    el.table.disabled = exam;
-    el.mode.textContent = exam ? "Прервать" : "Экзамен";
-    el.help.hidden = exam;
-    el.hintSwitch.hidden = exam;
-    el.hint.hidden = exam;
-    el.result.hidden = !(exam && state.exam.finished);
-    el.mode.hidden = exam && state.exam.finished;
+      : (other ? runTitle() : "Тренировка");
+    el.table.disabled = !home;
+    el.mode.textContent = home ? "Экзамен" : "Прервать";
+    el.help.hidden = !home;
+    el.hintSwitch.hidden = !home;
+    el.hint.hidden = !home;
+    el.phrase.hidden = other;
+    el.field.hidden = other;
+    el.drill.hidden = !home || !P;
+    el.calibrate.hidden = !home || !P;
+    el.target.hidden = !other || state.run.finished;
+    el.keyboard.hidden = state.mode !== "drill";
+    el.note.hidden = state.mode !== "calibrate";
+    el.result.hidden = !(x && x.finished);
+    el.mode.hidden = !!(x && x.finished);
   }
 
   el.mode.addEventListener("click", function () {
     el.mode.blur();
     if (state.mode === "home") { startExam(); return; }
-    if (confirm("Прервать экзамен? Результат будет потерян.")) goHome();
+    if (confirm("Прервать? Результат будет потерян.")) goHome();
   });
-  el.download.addEventListener("click", download);
+  el.drill.addEventListener("click", function () { el.drill.blur(); startDrill(); });
+  el.calibrate.addEventListener("click", function () { el.calibrate.blur(); startCalibration(); });
+  el.download.addEventListener("click", function () {
+    if (state.run) downloadRun(); else download();
+  });
   el.home.addEventListener("click", function () {
-    var x = state.exam;
+    var x = state.exam || state.run;
     if (x && x.finished && !x.downloaded && !confirm("Журнал не скачан. Всё равно вернуться домой?")) return;
     goHome();
   });
@@ -359,7 +568,7 @@
   });
   el.hintOn.addEventListener("change", function () { el.hintOn.blur(); render(); });
   window.addEventListener("beforeunload", function (e) {
-    var x = state.exam;
+    var x = state.exam || state.run;
     if (x && x.finished && !x.downloaded) {
       e.preventDefault();
       e.returnValue = "";

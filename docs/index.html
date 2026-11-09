@@ -26,6 +26,12 @@
   td, th { border: 1px solid #ccc; padding: 0.15em 0.5em; text-align: left; }
   #entries { columns: 4; font-family: monospace; font-size: 0.9em; }
   #result { border: 2px solid #4a8; border-radius: 4px; padding: 0.5em 1em; margin: 1em 0; }
+  #target { margin: 1em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
+  #target .key { width: 2.6em; height: 2.6em; line-height: 2.6em; font-size: 1.1em; }
+  #target-label { font-family: monospace; font-size: 1.3em; }
+  #target-note { height: 1.4em; font-family: monospace; color: #c00; }
+  #note, #keyboard { color: #555; margin: 0.3em 0; }
+  #keyboard.warn { color: #c60; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -33,9 +39,19 @@
 <header>
   <h1 id="title">Тренировка</h1>
   <label>Таблица: <select id="table"></select></label>
+  <button id="drill" type="button">Случайные аккорды</button>
+  <button id="calibrate" type="button">Калибровка клавиатуры</button>
   <button id="mode" type="button">Экзамен</button>
 </header>
 <div id="status"></div>
+<div id="keyboard" hidden></div>
+<div id="note" hidden></div>
+<div id="target" hidden>
+  <div class="group" id="target-left"></div>
+  <div class="group" id="target-right"></div>
+  <span id="target-label"></span>
+  <span id="target-note"></span>
+</div>
 <div id="phrase"></div>
 <div id="hint"></div>
 <label id="hint-switch">
@@ -63,6 +79,7 @@
   <button id="home" type="button">Домой</button>
 </div>
 <script src="data.js"></script>
+<script src="drill.js"></script>
 <script src="trainer.js"></script>
 </body>
 </html>
