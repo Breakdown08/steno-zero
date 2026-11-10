@@ -1,4 +1,4 @@
-"""Checks 26-32: trainer export and stats commands."""
+"""Checks 33, 36: trainer export and stats commands."""
 
 import json
 from pathlib import Path
@@ -86,6 +86,8 @@ def test_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert data["exam_phrases"] == exam
     assert summary["exam_phrases"] == len(exam)
     assert data["exam_size"] == 5
+    assert data["version"] == 2
+    assert data["fingers"] == ["L4", "L3", "L2", "L1", "L0", "R0", "R1", "R2", "R3", "R4"]
     assert [t["name"] for t in data["tables"]] == ["rival", "base"]
 
 
@@ -196,7 +198,8 @@ def test_stats_one_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert set(chords[8]) == {"chord", "label", "attempts", "correct", "intervals", "median_ms", "typed"}
     assert chords[8]["typed"] == [[9, 1], [1023, 1]]
     assert chords[8]["median_ms"] is None
-    assert chords[72]["label"] == "f j"
+    assert chords[72]["label"] == "L1 R1"
+    assert chords[8]["label"] == "L1"
     assert chords[72]["median_ms"] == 200.0
 
 
@@ -214,13 +217,13 @@ def test_stats_two_logs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
 def test_stats_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     good: Path = write_log(tmp_path / "good.json", example_text())
     again: Path = write_log(tmp_path / "again.json", example_text())
-    v2: Path = write_log(tmp_path / "v2.json", example_text().replace('"version": 1', '"version": 2'))
+    v1: Path = write_log(tmp_path / "v1.json", example_text().replace('"version": 2', '"version": 1'))
     empty: Path = write_log(
         tmp_path / "empty.json", example_text().split('"attempts"')[0] + '"attempts": []}'
     )
     cases: list[list[str]] = [
         [str(tmp_path / "нет.json")],
-        [str(v2)],
+        [str(v1)],
         [str(empty)],
         [str(good), str(again)],
     ]
@@ -228,3 +231,5 @@ def test_stats_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     for case in cases:
         assert main(["trainer", "stats", *case]) == 1, case
         assert capsys.readouterr().err.strip() != "", case
+    assert main(["trainer", "stats", str(v1)]) == 1
+    assert "version 1 is no longer read" in capsys.readouterr().err

@@ -5,11 +5,13 @@ import json
 from typing import Any
 
 from steno_zero.drill import drill_plan
-from steno_zero.keyboard import KeyboardProfile
+from tests.layout_helpers import VM, layout_obj_of
 
 type Plan = tuple[tuple[int, ...], ...]
 
 SHA: str = "ab" * 32
+# The blocks of the migrated laptop-vn, as finger chords of its old layout.
+LAPTOP_OLD_BLOCKED: tuple[int, ...] = (28, 52, 69, 84, 133, 152, 280, 536)
 
 
 def pair_chords() -> list[int]:
@@ -26,28 +28,29 @@ def plan_default() -> Plan:
 
 
 @functools.cache
-def plan_with(profile: KeyboardProfile) -> Plan:
-    return drill_plan(0, 100, 100, 6, profile)
+def plan_with(blocked: tuple[int, ...]) -> Plan:
+    return drill_plan(0, 100, 100, 6, blocked)
 
 
 def drill_dict(presentations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """The example of the drill log from the spec."""
+    """The example of the drill log v2 from the spec: i = 0 and 2."""
     rows: list[dict[str, Any]] = (
         presentations
         if presentations is not None
         else [
             {"i": 0, "target": 17, "typed": 17, "shown_ms": 1000.0, "down_ms": 1450.2, "up_ms": 1610.7},
-            {"i": 1, "target": 3, "typed": 7, "shown_ms": 1625.0, "down_ms": 2100.0, "up_ms": 2230.5},
+            {"i": 2, "target": 3, "typed": 7, "shown_ms": 1625.0, "down_ms": 2100.0, "up_ms": 2230.5},
         ]
     )
     return {
         "format": "steno-zero/drill-log",
-        "version": 1,
+        "version": 2,
         "session": "drill-7-2026-11-10T09-00-00.000Z",
         "seed": 0,
         "block": 7,
         "max_keys": 6,
-        "keyboard": {"name": "laptop", "sha256": SHA},
+        "layout": layout_obj_of(VM),
+        "keyboard": {"name": "laptop-vm", "sha256": SHA},
         "started": "2026-11-10T09:00:00.000Z",
         "finished": "2026-11-10T09:03:12.400Z",
         "user_agent": "pytest",

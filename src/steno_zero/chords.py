@@ -4,6 +4,7 @@ from steno_zero.params import CostParams
 
 N_KEYS: int = 10
 N_CHORDS: int = 1023
+FINGERS: tuple[str, ...] = ("L4", "L3", "L2", "L1", "L0", "R0", "R1", "R2", "R3", "R4")
 
 
 def chord_keys(chord: int) -> tuple[int, ...]:

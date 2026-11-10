@@ -1,38 +1,37 @@
-// steno-zero trainer. All data and layout come from window.STENO_ZERO_DATA (see docs/data.js).
-// The random-chord plan and the calibration queue come from window.STENO_ZERO_DRILL (docs/drill.js):
-// the page only plays them, everything that needs checking is built in Python.
+// steno-zero trainer. Tables and phrases come from window.STENO_ZERO_DATA (see docs/data.js).
+// The random-chord plan and the calibration queue come from window.STENO_ZERO_DRILL (docs/drill.js).
+// Layouts (finger -> key) and the plans of keyboard profiles come from window.STENO_ZERO_SETUPS
+// (docs/setups.js): the page only plays them, everything that needs checking is built in Python.
 (function () {
   "use strict";
   var D = window.STENO_ZERO_DATA;
   var P = window.STENO_ZERO_DRILL || null;
+  var S = window.STENO_ZERO_SETUPS;
   var CALIBRATION_ATTEMPTS = 3;
   var WRONG_FLASH_MS = 600;
-  var FINGERS = [
-    "л. мизинец", "л. безымянный", "л. средний", "л. указательный", "л. указательный, вниз",
-    "пр. указательный, вниз", "пр. указательный", "пр. средний", "пр. безымянный", "пр. мизинец"
+  var RUSSIAN = [
+    "л. мизинец", "л. безымянный", "л. средний", "л. указательный", "л. большой",
+    "пр. большой", "пр. указательный", "пр. средний", "пр. безымянный", "пр. мизинец"
   ];
   var $ = function (id) { return document.getElementById(id); };
   var el = {
     title: $("title"), table: $("table"), mode: $("mode"), status: $("status"),
     phrase: $("phrase"), hint: $("hint"), hintSwitch: $("hint-switch"), hintOn: $("hint-on"),
     field: $("field"), help: $("help"), layout: $("layout"), entries: $("entries"),
-    left: $("left"), right: $("right"), held: $("held"),
+    setup: $("setup"), hands: $("hands"), held: $("held"),
     drill: $("drill"), calibrate: $("calibrate"), keyboard: $("keyboard"), note: $("note"),
-    target: $("target"), targetLeft: $("target-left"), targetRight: $("target-right"),
-    targetLabel: $("target-label"), targetNote: $("target-note"),
+    target: $("target"), targetLabel: $("target-label"), targetNote: $("target-note"),
     result: $("result"), summary: $("summary"), download: $("download"), home: $("home")
   };
 
-  var bitOf = {};            // KeyboardEvent.code -> chord bit
-  var boxes = [];
-  var targetBoxes = [];
+  var bitOf = {};            // KeyboardEvent.code -> chord bit, from the layout of the chosen setup
+  var fingerGs = [];         // <g class="finger"> of the hands, by bit
   var flashTimer = null;
-  D.keys.forEach(function (k, i) { bitOf[k.code] = 1 << i; });
 
   var state = {
+    setup: S.setups[0],      // layout, keyboard profile and plan, see useSetup
     mode: "home",            // "home" | "exam" | "drill" | "calibrate"
     table: D.tables[0],
-    labelOf: {},             // chord -> label, for the current table
     pieceOf: {},             // chord -> piece
     segs: [],                // [piece, chord] of the current phrase
     phraseIdx: -1,
@@ -70,9 +69,8 @@
   function useTable(name) {
     var t = D.tables.filter(function (x) { return x.name === name; })[0] || D.tables[0];
     state.table = t;
-    state.labelOf = {};
     state.pieceOf = {};
-    t.entries.forEach(function (e) { state.labelOf[e[1]] = e[2]; state.pieceOf[e[1]] = e[0]; });
+    t.entries.forEach(function (e) { state.pieceOf[e[1]] = e[0]; });
     el.table.value = t.name;
     el.entries.textContent = "";
     t.entries.forEach(function (e) {
@@ -114,49 +112,106 @@
     } else {
       el.phrase.appendChild(span("", rest.join("")));
     }
-    el.hint.textContent = hinted ? show(next) + " — " + state.labelOf[state.segs[state.pos][1]] : "";
+    el.hint.textContent = hinted ? show(next) + " — " + chordText(state.segs[state.pos][1]) : "";
     el.field.textContent = "";
     el.field.appendChild(span("", state.typed));
     el.field.appendChild(span("wrong", state.wrong));
     el.status.textContent = (exam && state.exam ? fmtTime(elapsed()) + "  " : "") +
       "аккордов: " + state.chords + ", промахов: " + state.misses;
+    renderHands();
+  }
+
+  function heldBits() {
+    var bits = 0;
+    Object.keys(state.down).forEach(function (code) { bits |= bitOf[code]; });
+    return bits;
+  }
+
+  function popcount(x) {
+    var n = 0;
+    for (; x; x &= x - 1) n++;
+    return n;
+  }
+
+  // The chord that the page shows as the goal right now, or null: the exam, the home without a
+  // hint and the result screen show none, and then a held finger is only green.
+  function currentTarget() {
+    var r = state.run;
+    if (state.mode === "home") {
+      return el.hintOn.checked && state.pos < state.segs.length ? state.segs[state.pos][1] : null;
+    }
+    if (state.mode === "drill") return r && !r.finished ? r.order[r.k] : null;
+    if (state.mode === "calibrate") return r && !r.finished ? r.queue[0] : null;
+    return null;
+  }
+
+  // wait: needed, not held (yellow, dashed); ok: needed and held (green); extra: held but not
+  // needed (red, with a cross); held: held when there is no goal (green).
+  function renderHands() {
+    var target = currentTarget();
+    var held = heldBits();
+    fingerGs.forEach(function (g, i) {
+      var bit = 1 << i;
+      var cls = "finger";
+      if (target === null) {
+        if (held & bit) cls += " held";
+      } else if (target & bit) {
+        cls += held & bit ? " ok" : " wait";
+      } else if (held & bit) {
+        cls += " extra";
+      }
+      g.setAttribute("class", cls);
+    });
   }
 
   function renderHeld() {
-    var n = 0;
-    D.keys.forEach(function (k, i) {
-      var on = !!state.down[k.code];
-      boxes[i].className = on ? "key on" : "key";
-      if (on) n++;
-    });
+    var n = popcount(heldBits());
     if (n > state.maxHeld) state.maxHeld = n;
     el.held.textContent = "максимум одновременно: " + state.maxHeld;
+    renderHands();
   }
 
-  // ---- layout and help
+  // ---- setups, layout and help
 
-  function buildStatic() {
-    D.keys.forEach(function (k, i) {
-      var b = document.createElement("div");
-      b.className = "key";
-      b.textContent = k.label;
-      boxes.push(b);
-      (i < 5 ? el.left : el.right).appendChild(b);
-      var t = document.createElement("div");
-      t.className = "key";
-      t.textContent = k.label;
-      targetBoxes.push(t);
-      (i < 5 ? el.targetLeft : el.targetRight).appendChild(t);
+  function chordText(chord) {
+    var keys = state.setup.layout.keys;
+    var fingers = keys.filter(function (_, i) { return chord >> i & 1; });
+    return fingers.map(function (k) { return k.finger; }).join(" ") + " (" +
+      fingers.map(function (k) { return k.label; }).join(" ") + ")";
+  }
+
+  function useSetup(setup) {
+    state.setup = setup;
+    state.down = {};
+    state.chord = 0;
+    bitOf = {};
+    setup.layout.keys.forEach(function (k, i) { bitOf[k.code] = 1 << i; });
+    el.setup.value = setup.name;
+    fingerGs.forEach(function (g, i) {
+      g.querySelector(".key").textContent = setup.layout.keys[i].label;
     });
     el.layout.textContent = "";
-    D.keys.forEach(function (k, i) {
+    setup.layout.keys.forEach(function (k, i) {
       var tr = document.createElement("tr");
-      [String(i), k.label, FINGERS[i] || ""].forEach(function (text) {
+      [String(i), k.finger, k.label, RUSSIAN[i]].forEach(function (text) {
         var td = document.createElement("td");
         td.textContent = text;
         tr.appendChild(td);
       });
       el.layout.appendChild(tr);
+    });
+    renderHeld();
+  }
+
+  function buildStatic() {
+    Array.prototype.forEach.call(el.hands.querySelectorAll("g.finger"), function (g) {
+      fingerGs[parseInt(g.getAttribute("data-finger"), 10)] = g;
+    });
+    S.setups.forEach(function (x) {
+      var o = document.createElement("option");
+      o.value = x.name;
+      o.textContent = x.name;
+      el.setup.appendChild(o);
     });
     D.tables.forEach(function (t) {
       var o = document.createElement("option");
@@ -305,13 +360,14 @@
     var x = state.exam;
     return {
       format: "steno-zero/trainer-log",
-      version: 1,
+      version: 2,
       session: x.session,
       table: state.table.name,
       table_sha256: state.table.sha256,
       started: x.started,
       finished: x.finishedAt,
       user_agent: navigator.userAgent,
+      layout: state.setup.layout,
       max_held: state.maxHeld,
       phrases: x.order,
       chars: x.order.reduce(function (s, i) { return s + D.exam_phrases[i].length; }, 0),
@@ -350,14 +406,9 @@
 
   // ---- random chords and calibration (the plan and the queue come from drill.js)
 
-  function labelOfChord(chord) {
-    return D.keys.filter(function (_, i) { return chord >> i & 1; })
-      .map(function (k) { return k.label; }).join(" ");
-  }
-
   function showTarget(chord) {
-    targetBoxes.forEach(function (b, i) { b.className = chord >> i & 1 ? "key on" : "key"; });
-    el.targetLabel.textContent = labelOfChord(chord);
+    el.targetLabel.textContent = chordText(chord);
+    renderHands();
   }
 
   function clearFlash() {
@@ -368,7 +419,7 @@
 
   function flashWrong(typed) {
     clearFlash();
-    el.targetNote.textContent = labelOfChord(typed);
+    el.targetNote.textContent = chordText(typed);
     flashTimer = setTimeout(clearFlash, WRONG_FLASH_MS);
   }
 
@@ -386,7 +437,7 @@
     var r = state.run;
     if (state.mode === "drill") {
       return "Случайные аккорды — блок " + r.block + ", " +
-        Math.min(r.k + 1, r.order.length) + " из " + r.order.length;
+        Math.min(r.n + 1, r.order.length) + " из " + r.order.length;
     }
     return "Калибровка — осталось " + r.queue.length;
   }
@@ -394,26 +445,29 @@
   function startDrill() {
     if (!P) return;
     var wanted = parseInt(new URLSearchParams(window.location.search).get("block"), 10);
-    var block = wanted >= 0 && wanted < P.blocks.length ? wanted : Math.floor(Math.random() * P.blocks.length);
+    var plan = state.setup.plan || P.blocks;  // a setup with a keyboard profile has its own plan
+    var block = wanted >= 0 && wanted < plan.length ? wanted : Math.floor(Math.random() * plan.length);
     var started = new Date().toISOString();
     state.mode = "drill";
     state.run = {
-      kind: "drill", block: block, order: P.blocks[block], k: 0, rows: [], shownAt: 0,
+      kind: "drill", block: block, order: plan[block], k: 0, n: 0, last: null, rows: [], shownAt: 0,
       started: started, finished: false, finishedAt: "", downloaded: false,
       session: "drill-" + block + "-" + started.replace(/:/g, "-")
     };
     resetInput();
-    el.keyboard.textContent = P.keyboard
-      ? "клавиатура: " + P.keyboard.name
+    el.keyboard.textContent = state.setup.keyboard
+      ? "клавиатура: " + state.setup.keyboard.name + ", заблокированных сочетаний: " +
+        state.setup.blocked.length + " (в плане их нет)"
       : "план без профиля клавиатуры: заглушённые клавиатурой аккорды дадут ложные промахи";
-    el.keyboard.className = P.keyboard ? "" : "warn";
+    el.keyboard.className = state.setup.keyboard ? "" : "warn";
     layoutMode();
     showDrillChord();
   }
 
   function showDrillChord() {
     var r = state.run;
-    showTarget(r.order[r.k]);
+    r.last = r.order[r.k];
+    showTarget(r.last);
     el.status.textContent = "";
     r.shownAt = performance.now();
   }
@@ -430,6 +484,8 @@
     state.chords++;
     if (typed !== target) { state.misses++; flashWrong(typed); } else { clearFlash(); }
     r.k++;
+    r.n++;
+    while (r.k < r.order.length && r.order[r.k] === r.last) r.k++;  // never the same chord twice in a row
     if (r.k < r.order.length) { layoutMode(); showDrillChord(); return; }
     r.finished = true;
     r.finishedAt = new Date().toISOString();
@@ -490,22 +546,23 @@
     layoutMode();
     el.status.textContent = "";
     el.summary.textContent = "Не прошли: " +
-      (r.failed.length ? r.failed.map(labelOfChord).join(", ") : "нет") +
+      (r.failed.length ? r.failed.map(chordText).join(", ") : "нет") +
       "; максимум одновременно: " + state.maxHeld;
   }
 
   function buildRunLog() {
     var r = state.run;
     var common = {
-      version: 1, session: r.session, started: r.started, finished: r.finishedAt,
-      user_agent: navigator.userAgent, max_held: state.maxHeld
+      version: 2, session: r.session, started: r.started, finished: r.finishedAt,
+      user_agent: navigator.userAgent, max_held: state.maxHeld, layout: state.setup.layout
     };
     if (r.kind === "calibrate") {
       return Object.assign({ format: "steno-zero/keyboard-calibration" }, common, { attempts: r.attempts });
     }
     return Object.assign({ format: "steno-zero/drill-log" }, common, {
       seed: P.seed, block: r.block, max_keys: P.max_keys,
-      keyboard: P.keyboard ? { name: P.keyboard.name, sha256: P.keyboard.sha256 } : null,
+      keyboard: state.setup.keyboard
+        ? { name: state.setup.keyboard.name, sha256: state.setup.keyboard.sha256 } : null,
       presentations: r.rows
     });
   }
@@ -531,6 +588,7 @@
       ? "Экзамен — фраза " + Math.min(state.exam.k + 1, state.exam.order.length) + " из " + state.exam.order.length
       : (other ? runTitle() : "Тренировка");
     el.table.disabled = !home;
+    el.setup.disabled = !home;
     el.mode.textContent = home ? "Экзамен" : "Прервать";
     el.help.hidden = !home;
     el.hintSwitch.hidden = !home;
@@ -544,6 +602,7 @@
     el.note.hidden = state.mode !== "calibrate";
     el.result.hidden = !(x && x.finished);
     el.mode.hidden = !!(x && x.finished);
+    renderHands();
   }
 
   el.mode.addEventListener("click", function () {
@@ -561,6 +620,12 @@
     if (x && x.finished && !x.downloaded && !confirm("Журнал не скачан. Всё равно вернуться домой?")) return;
     goHome();
   });
+  el.setup.addEventListener("change", function () {
+    el.setup.blur();
+    if (state.mode !== "home") { el.setup.value = state.setup.name; return; }
+    useSetup(S.setups.filter(function (x) { return x.name === el.setup.value; })[0]);
+    nextHomePhrase();
+  });
   el.table.addEventListener("change", function () {
     el.table.blur();
     useTable(el.table.value);
@@ -576,9 +641,9 @@
   });
 
   buildStatic();
-  var wanted = new URLSearchParams(window.location.search).get("table");
-  useTable(wanted);
-  renderHeld();
+  var query = new URLSearchParams(window.location.search);
+  useSetup(S.setups.filter(function (x) { return x.name === query.get("setup"); })[0] || S.setups[0]);
+  useTable(query.get("table"));
   nextHomePhrase();
   layoutMode();
 })();

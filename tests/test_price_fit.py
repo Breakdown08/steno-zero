@@ -1,4 +1,4 @@
-"""Checks 27-35: the models on the synthetic measurements."""
+"""Checks 39-41: the models on the synthetic measurements, layouts, profiles, suspects."""
 
 import dataclasses
 from typing import Any
@@ -12,7 +12,8 @@ from steno_zero.keyboard import Blocked, KeyboardProfile, profile_sha256
 from steno_zero.price import FEATURE_NAMES, TIME_MODELS, PriceFit, presentations_frame
 from steno_zero.trainer import chord_label
 from tests.drill_helpers import Plan
-from tests.keyboard_helpers import P1
+from tests.keyboard_helpers import LAPTOP_VN, P1
+from tests.layout_helpers import KL_SWAPPED, VM, VM_CODES, ZZ
 from tests.price_helpers import (
     extra_log,
     fit,
@@ -37,6 +38,7 @@ REPORT_KEYS: set[str] = {
     "folds",
     "max_ms",
     "keyboard",
+    "layouts",
     "rows",
     "time_rows",
     "misses",
@@ -59,8 +61,7 @@ PRICES_KEYS: set[str] = {
     "max_keys",
     "seed",
     "keyboard",
-    "available",
-    "unavailable",
+    "layouts",
     "sessions",
     "prices",
 }
@@ -103,33 +104,31 @@ def test_unseen_chords_get_the_true_price() -> None:
     assert max(errors) <= 60
 
 
+ROW_KEYS: set[str] = {"chord", "label", "fingers", "time_ms", "miss_prob"}
+
+
 def test_prices_list_every_chord_without_profile() -> None:
     prices: dict[str, Any] = main_fit().prices
     rows: list[dict[str, Any]] = prices["prices"]
     assert [r["chord"] for r in rows] == list(allowed_chords(6))
-    assert all(r["available"] is True for r in rows)
+    assert all(set(r) == ROW_KEYS for r in rows)
+    assert all(r["time_ms"] is not None and r["miss_prob"] is not None for r in rows)
     assert all(0 < r["miss_prob"] < 1 for r in rows)
-    assert all(r["time_ms"] is not None for r in rows)
     assert all(r["label"] == chord_label(r["chord"]) for r in rows)
-    assert all(r["keys"] == r["chord"].bit_count() for r in rows)
+    assert all(r["fingers"] == r["chord"].bit_count() for r in rows)
     assert prices["keyboard"] is None
-    assert prices["unavailable"] == 0
-    assert prices["available"] == 847
+    assert prices["layouts"] == ["qwerty-vm"]
+    assert "available" not in prices
+    assert "unavailable" not in prices
 
 
-def test_prices_with_profile() -> None:
+def test_prices_with_profile_cover_every_chord_too() -> None:
     result: PriceFit = p1_fit()
     rows: dict[int, dict[str, Any]] = {r["chord"]: r for r in result.prices["prices"]}
     assert list(rows) == list(allowed_chords(6))
-    c: int
-    for c in (152, 153):
-        assert rows[c]["available"] is False
-        assert rows[c]["time_ms"] is None
-        assert rows[c]["miss_prob"] is None
-    assert rows[88]["available"] is True
-    assert rows[88]["time_ms"] is not None
-    assert result.prices["available"] == 783
-    assert result.prices["unavailable"] == 64
+    assert all(set(r) == ROW_KEYS for r in rows.values())
+    assert all(r["time_ms"] is not None and r["miss_prob"] is not None for r in rows.values())
+    assert "available" not in result.prices
     assert result.prices["keyboard"] == {"name": "test", "sha256": profile_sha256(P1)}
     assert result.report["keyboard"] == {"name": "test", "sha256": profile_sha256(P1)}
     check_ridge_thresholds(result)
@@ -138,7 +137,7 @@ def test_prices_with_profile() -> None:
 def test_profile_must_match_the_frame() -> None:
     with pytest.raises(ValueError):
         fit(p1_frame(), profile=None)
-    other: KeyboardProfile = dataclasses.replace(P1, blocked=(Blocked(152, True),))
+    other: KeyboardProfile = dataclasses.replace(P1, blocked=(Blocked(("KeyF", "KeyK", "KeyV"), True),))
     assert profile_sha256(other) != profile_sha256(P1)
     with pytest.raises(ValueError):
         fit(p1_frame(), profile=other)
@@ -146,11 +145,52 @@ def test_profile_must_match_the_frame() -> None:
         fit(main_frame(), profile=P1)
 
 
-def test_a_blocked_target_in_the_frame_is_an_error() -> None:
+def test_a_target_blocked_through_the_layout_is_an_error() -> None:
     bad: DrillLog = extra_log([(152, 152)] * 8, keyboard_of(P1), session="blocked")
     frame: pd.DataFrame = presentations_frame([*p1_logs(), bad], 5)
-    with pytest.raises(ValueError):
+    info: pytest.ExceptionInfo[ValueError]
+    with pytest.raises(ValueError) as info:
         fit(frame, profile=P1)
+    assert chord_label(152) in str(info.value)
+    assert "qwerty-vm" in str(info.value)
+
+
+def test_a_profile_that_does_not_cover_the_layout_is_an_error() -> None:
+    logs: list[DrillLog] = synth_logs(main_plan()[:10], keyboard_of(LAPTOP_VN))
+    frame: pd.DataFrame = presentations_frame(logs, 5)
+    info: pytest.ExceptionInfo[ValueError]
+    with pytest.raises(ValueError, match="not calibrated:") as info:
+        fit(frame, profile=LAPTOP_VN)
+    assert "KeyM" in str(info.value)
+
+
+def two_layout_logs() -> list[DrillLog]:
+    return [
+        *synth_logs(main_plan()[:20]),
+        *synth_logs(main_plan()[20:30], layout=ZZ, prefix="z"),
+    ]
+
+
+def test_report_has_the_split_by_layout() -> None:
+    frame: pd.DataFrame = presentations_frame(two_layout_logs(), 5)
+    result: PriceFit = fit(frame, model="ridge")
+    layouts: list[dict[str, Any]] = result.report["layouts"]
+    assert [x["name"] for x in layouts] == ["qwerty-vm", "zz"]
+    assert all(set(x) == {"name", "keys", "sessions", "presentations"} for x in layouts)
+    assert sorted(layouts[0]["keys"]) == sorted(VM_CODES)
+    assert sorted(layouts[1]["keys"]) == sorted(ZZ.codes)
+    assert (layouts[0]["sessions"], layouts[1]["sessions"]) == (20, 10)
+    assert layouts[0]["presentations"] == int((frame["layout"] == "qwerty-vm").sum())
+    assert layouts[1]["presentations"] == int((frame["layout"] == "zz").sum())
+    assert result.prices["layouts"] == ["qwerty-vm", "zz"]
+
+
+def test_report_layouts_of_one_layout() -> None:
+    layouts: list[dict[str, Any]] = main_fit().report["layouts"]
+    assert len(layouts) == 1
+    assert layouts[0]["name"] == "qwerty-vm"
+    assert layouts[0]["sessions"] == 30
+    assert layouts[0]["presentations"] == len(main_frame())
 
 
 def test_miss_models() -> None:
@@ -172,24 +212,48 @@ def test_no_misses_means_no_miss_model() -> None:
     assert all(0 < r["miss_prob"] < 1 for r in result.prices["prices"])
 
 
-def test_suspect_chords_found() -> None:
-    plan: Plan = without(main_plan(), lambda c: c == 412)
+def test_suspect_chords_found_with_their_codes() -> None:
+    plan: Plan = without(main_plan(), lambda c: c == 152)
     warm: list[tuple[int, int]] = [(1, 1)] * 5
-    logs: list[DrillLog] = [
-        *synth_logs(plan),
-        extra_log([*warm, (412, 412 & ~128), (412, 412 & ~128), (412, 412 & ~128)]),
-    ]
+    logs: list[DrillLog] = [*synth_logs(plan), extra_log([*warm, (152, 24), (152, 24), (152, 8)])]
     frame: pd.DataFrame = presentations_frame(logs, 5)
     result: PriceFit = fit(frame, model="ridge")
-    expected: dict[str, Any] = {"chord": 412, "label": chord_label(412), "presentations": 3}
+    expected: dict[str, Any] = {
+        "chord": 152,
+        "label": chord_label(152),
+        "layout": "qwerty-vm",
+        "keys": ["KeyF", "KeyV", "KeyK"],
+        "presentations": 3,
+    }
     assert expected in result.report["suspect_chords"]
+    assert all(
+        set(x) == {"chord", "label", "layout", "keys", "presentations"}
+        for x in result.report["suspect_chords"]
+    )
+
+
+def test_suspect_chords_are_grouped_by_layout() -> None:
+    warm: list[tuple[int, int]] = [(1, 1)] * 5
+    miss: list[tuple[int, int]] = [(152, 24), (152, 24)]
+    plan: Plan = without(main_plan(), lambda c: c == 152)
+    logs: list[DrillLog] = [
+        *synth_logs(plan),
+        extra_log([*warm, *miss], session="x1", layout=VM),
+        extra_log([*warm, *miss], session="x2", layout=KL_SWAPPED),
+    ]
+    result: PriceFit = fit(presentations_frame(logs, 5), model="ridge")
+    found: list[dict[str, Any]] = [x for x in result.report["suspect_chords"] if x["chord"] == 152]
+    assert [x["layout"] for x in found] == ["qwerty-kl", "qwerty-vm"]
+    assert found[0]["keys"] == ["KeyF", "KeyV", "KeyL"]
+    assert found[1]["keys"] == ["KeyF", "KeyV", "KeyK"]
+    assert [x["presentations"] for x in found] == [2, 2]
 
 
 def test_suspect_chords_are_only_all_miss_strict_subsets() -> None:
     frame: pd.DataFrame = main_frame()
     suspects: list[dict[str, Any]] = main_fit().report["suspect_chords"]
-    chords: list[int] = [s["chord"] for s in suspects]
-    assert chords == sorted(chords)
+    order: list[tuple[str, int]] = [(x["layout"], x["chord"]) for x in suspects]
+    assert order == sorted(order)
     s: dict[str, Any]
     for s in suspects:
         rows: pd.DataFrame = frame[frame["target"] == s["chord"]]
@@ -198,6 +262,7 @@ def test_suspect_chords_are_only_all_miss_strict_subsets() -> None:
         assert ((rows["typed"] & rows["target"] == rows["typed"]) & (rows["typed"] != rows["target"])).all()
         assert s["presentations"] == len(rows)
         assert s["label"] == chord_label(s["chord"])
+        assert len(s["keys"]) == s["chord"].bit_count()
 
 
 def test_report_fields() -> None:
@@ -206,7 +271,7 @@ def test_report_fields() -> None:
     report: dict[str, Any] = result.report
     assert set(report) == REPORT_KEYS
     assert report["format"] == "steno-zero/chord-price-report"
-    assert report["version"] == 1
+    assert report["version"] == 2
     assert (report["target"], report["max_keys"], report["seed"], report["folds"]) == ("total", 6, 0, 5)
     assert report["max_ms"] == 5000.0
     assert report["rows"] == len(frame)
@@ -228,14 +293,14 @@ def test_report_fields() -> None:
     assert list(report["ridge_coefficients"]) == ["intercept", *FEATURE_NAMES]
     assert set(result.prices) == PRICES_KEYS
     assert result.prices["format"] == "steno-zero/chord-prices"
-    assert result.prices["version"] == 1
+    assert result.prices["version"] == 2
 
 
 def test_ridge_coefficients_have_the_sign_of_the_truth() -> None:
     coefficients: dict[str, float] = main_fit().report["ridge_coefficients"]
     assert coefficients["holes"] > 100
     assert coefficients["both_hands"] > 50
-    assert coefficients["keys"] > 30
+    assert coefficients["fingers"] > 30
 
 
 def test_motor_target() -> None:
@@ -309,4 +374,4 @@ def test_rounding() -> None:
 def test_other_profile_object_with_same_content_is_accepted() -> None:
     same: KeyboardProfile = dataclasses.replace(P1)
     assert same is not P1
-    assert fit(p1_frame(), model="ridge", profile=same).prices["available"] == 783
+    assert fit(p1_frame(), model="ridge", profile=same).prices["keyboard"]["name"] == "test"

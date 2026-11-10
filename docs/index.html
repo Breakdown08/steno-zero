@@ -16,18 +16,24 @@
   #field { border: 1px solid #888; border-radius: 4px; padding: 0.4em 0.6em; min-height: 1.4em;
            font-size: 1.4em; font-family: monospace; white-space: pre-wrap; background: #fafafa; }
   .wrong { color: #c00; }
-  #keys { margin: 1em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
-  .group { display: flex; gap: 0.3em; }
-  .key { width: 2em; height: 2em; border: 1px solid #888; border-radius: 4px; text-align: center;
-         line-height: 2em; font-family: monospace; }
-  .key.on { background: #4a8; color: #fff; }
   details { margin: 1em 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.4em 0.8em; }
   table { border-collapse: collapse; margin: 0.5em 0; }
   td, th { border: 1px solid #ccc; padding: 0.15em 0.5em; text-align: left; }
   #entries { columns: 4; font-family: monospace; font-size: 0.9em; }
   #result { border: 2px solid #4a8; border-radius: 4px; padding: 0.5em 1em; margin: 1em 0; }
-  #target { margin: 1em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
-  #target .key { width: 2.6em; height: 2.6em; line-height: 2.6em; font-size: 1.1em; }
+  #target { margin: 0.6em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
+  #hands { display: block; width: 100%; max-width: 40em; height: auto; margin: 0.6em auto; }
+  #hands .palm { fill: #f3ece4; stroke: #b9a99a; stroke-width: 1.5; }
+  .finger .tip { fill: #fafafa; stroke: #888; stroke-width: 1.5; }
+  .finger .name { font: bold 12px monospace; text-anchor: middle; fill: #333; pointer-events: none; }
+  .finger .key { font: 14px monospace; text-anchor: middle; fill: #333; pointer-events: none; }
+  .cross { display: none; fill: none; stroke: #fff; stroke-width: 4; stroke-linecap: round; }
+  .finger.wait .tip { fill: #f2c230; stroke: #6b5200; stroke-width: 4; stroke-dasharray: 6 4; }
+  .finger.ok .tip, .finger.held .tip { fill: #2e9d5b; stroke: #14532d; stroke-width: 4; }
+  .finger.ok .name, .finger.ok .key, .finger.held .name, .finger.held .key,
+  .finger.extra .name, .finger.extra .key { fill: #fff; }
+  .finger.extra .tip { fill: #d33b2f; stroke: #7f1d1d; stroke-width: 4; }
+  .finger.extra .cross { display: inline; }
   #target-label { font-family: monospace; font-size: 1.3em; }
   #target-note { height: 1.4em; font-family: monospace; color: #c00; }
   #note, #keyboard { color: #555; margin: 0.3em 0; }
@@ -38,6 +44,7 @@
 <body>
 <header>
   <h1 id="title">Тренировка</h1>
+  <label>Связка: <select id="setup"></select></label>
   <label>Таблица: <select id="table"></select></label>
   <button id="drill" type="button">Случайные аккорды</button>
   <button id="calibrate" type="button">Калибровка клавиатуры</button>
@@ -47,11 +54,73 @@
 <div id="keyboard" hidden></div>
 <div id="note" hidden></div>
 <div id="target" hidden>
-  <div class="group" id="target-left"></div>
-  <div class="group" id="target-right"></div>
   <span id="target-label"></span>
   <span id="target-note"></span>
 </div>
+<svg id="hands" viewBox="0 0 640 230" role="img" aria-label="Две кисти: подсвечены пальцы аккорда">
+  <path class="palm" d="M 40 90 L 300 130 C 330 190 300 215 240 220 L 110 220 C 60 200 40 140 40 90 Z"></path>
+  <path class="palm" d="M 600 90 L 340 130 C 310 190 340 215 400 220 L 530 220 C 580 200 600 140 600 90 Z"></path>
+  <g class="finger" data-finger="0">
+    <ellipse class="tip" data-finger="0" cx="70" cy="80" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 58 66 L 82 94 M 82 66 L 58 94"></path>
+    <text class="name" x="70" y="77">L4</text>
+    <text class="key" x="70" y="94"></text>
+  </g>
+  <g class="finger" data-finger="1">
+    <ellipse class="tip" data-finger="1" cx="125" cy="50" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 113 36 L 137 64 M 137 36 L 113 64"></path>
+    <text class="name" x="125" y="47">L3</text>
+    <text class="key" x="125" y="64"></text>
+  </g>
+  <g class="finger" data-finger="2">
+    <ellipse class="tip" data-finger="2" cx="175" cy="35" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 163 21 L 187 49 M 187 21 L 163 49"></path>
+    <text class="name" x="175" y="32">L2</text>
+    <text class="key" x="175" y="49"></text>
+  </g>
+  <g class="finger" data-finger="3">
+    <ellipse class="tip" data-finger="3" cx="225" cy="50" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 213 36 L 237 64 M 237 36 L 213 64"></path>
+    <text class="name" x="225" y="47">L1</text>
+    <text class="key" x="225" y="64"></text>
+  </g>
+  <g class="finger" data-finger="4">
+    <ellipse class="tip" data-finger="4" cx="285" cy="150" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 273 136 L 297 164 M 297 136 L 273 164"></path>
+    <text class="name" x="285" y="147">L0</text>
+    <text class="key" x="285" y="164"></text>
+  </g>
+  <g class="finger" data-finger="5">
+    <ellipse class="tip" data-finger="5" cx="355" cy="150" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 343 136 L 367 164 M 367 136 L 343 164"></path>
+    <text class="name" x="355" y="147">R0</text>
+    <text class="key" x="355" y="164"></text>
+  </g>
+  <g class="finger" data-finger="6">
+    <ellipse class="tip" data-finger="6" cx="415" cy="50" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 403 36 L 427 64 M 427 36 L 403 64"></path>
+    <text class="name" x="415" y="47">R1</text>
+    <text class="key" x="415" y="64"></text>
+  </g>
+  <g class="finger" data-finger="7">
+    <ellipse class="tip" data-finger="7" cx="465" cy="35" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 453 21 L 477 49 M 477 21 L 453 49"></path>
+    <text class="name" x="465" y="32">R2</text>
+    <text class="key" x="465" y="49"></text>
+  </g>
+  <g class="finger" data-finger="8">
+    <ellipse class="tip" data-finger="8" cx="515" cy="50" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 503 36 L 527 64 M 527 36 L 503 64"></path>
+    <text class="name" x="515" y="47">R3</text>
+    <text class="key" x="515" y="64"></text>
+  </g>
+  <g class="finger" data-finger="9">
+    <ellipse class="tip" data-finger="9" cx="570" cy="80" rx="24" ry="28"></ellipse>
+    <path class="cross" d="M 558 66 L 582 94 M 582 66 L 558 94"></path>
+    <text class="name" x="570" y="77">R4</text>
+    <text class="key" x="570" y="94"></text>
+  </g>
+</svg>
 <div id="phrase"></div>
 <div id="hint"></div>
 <label id="hint-switch">
@@ -60,7 +129,8 @@
 <div id="field"></div>
 <details id="help">
   <summary>Справка (/)</summary>
-  <p>Нажмите клавиши аккорда вместе: он срабатывает, когда отпущены все клавиши.</p>
+  <p>Нажмите клавиши аккорда вместе: он срабатывает, когда отпущены все клавиши. Кисти показывают пальцы: жёлтый с пунктиром нужен, но не зажат, зелёный зажат, красный с крестом лишний. Там, где цели нет, зажатый палец просто зелёный.</p>
+  <p>Раскладка выбранной связки: бит, палец, клавиша.</p>
   <table id="layout"></table>
   <p>Клавиши управления: <b>/</b> открывает и закрывает справку, <b>Esc</b> пропускает фразу.</p>
   <p>Экзамен: несколько случайных фраз из отдельного набора, без справки и подсказки. Идёт
@@ -68,11 +138,7 @@
   <p>Раскладка ОС не важна: страница смотрит на физические клавиши.</p>
   <div id="entries"></div>
 </details>
-<div id="keys">
-  <div class="group" id="left"></div>
-  <div class="group" id="right"></div>
-  <span id="held">максимум одновременно: 0</span>
-</div>
+<div id="held">максимум одновременно: 0</div>
 <div id="result" hidden>
   <div id="summary"></div>
   <button id="download" type="button">Скачать журнал</button>
@@ -80,6 +146,7 @@
 </div>
 <script src="data.js"></script>
 <script src="drill.js"></script>
+<script src="setups.js"></script>
 <script src="trainer.js"></script>
 </body>
 </html>

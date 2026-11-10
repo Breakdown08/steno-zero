@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from tests.layout_helpers import VM, layout_obj_of
+
 type Row = tuple[int, int, int, int, float, float]  # phrase, pos, target, typed, down_ms, up_ms
 
 STARTED: str = "2026-11-08T10:00:00.000Z"
@@ -25,13 +27,14 @@ def log_dict(
 ) -> dict[str, Any]:
     return {
         "format": "steno-zero/trainer-log",
-        "version": 1,
+        "version": 2,
         "session": session,
         "table": "rival",
         "table_sha256": "0" * 64,
         "started": started,
         "finished": "2026-11-08T10:02:31.412Z",
         "user_agent": "pytest",
+        "layout": layout_obj_of(VM),
         "max_held": 3,
         "phrases": [0] if phrases is None else phrases,
         "chars": chars,

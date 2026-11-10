@@ -1,4 +1,4 @@
-"""Checks 1-18: layout, help order, phrases, trainer data and data.js."""
+"""Checks 33, 35: help order, phrases, trainer data and data.js."""
 
 import json
 from collections.abc import Iterator
@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from steno_zero.alphabet import ALPHABET, normalize
-from steno_zero.chords import N_KEYS, chord_keys
+from steno_zero.chords import FINGERS
 from steno_zero.corpus import split_corpus
 from steno_zero.simulate import segment
 from steno_zero.table import Table
@@ -16,9 +16,6 @@ from steno_zero.trainer import (
     DATA_FORMAT,
     DATA_PREFIX,
     DATA_SUFFIX,
-    HELP_KEY,
-    KEY_CODES,
-    KEY_LABELS,
     VERSION,
     chord_label,
     data_js,
@@ -39,50 +36,6 @@ EXAM: list[str] = ["второй экзамен тут.", "ещё один эк�
 def is_subsequence(small: list[str], big: list[str]) -> bool:
     it: Iterator[str] = iter(big)
     return all(x in it for x in small)
-
-
-# 1-4: layout and labels
-
-
-def test_layout_constants() -> None:
-    assert KEY_CODES == (
-        "KeyA",
-        "KeyS",
-        "KeyD",
-        "KeyF",
-        "KeyV",
-        "KeyN",
-        "KeyJ",
-        "KeyK",
-        "KeyL",
-        "Semicolon",
-    )
-    assert KEY_LABELS == ("a", "s", "d", "f", "v", "n", "j", "k", "l", ";")
-    assert len(KEY_CODES) == N_KEYS
-    assert len(KEY_LABELS) == N_KEYS
-    assert HELP_KEY == "Slash"
-    assert HELP_KEY not in KEY_CODES
-
-
-@pytest.mark.parametrize(
-    ("chord", "label"),
-    [(1, "a"), (8, "f"), (72, "f j"), (48, "v n"), (1023, "a s d f v n j k l ;")],
-)
-def test_chord_label_examples(chord: int, label: str) -> None:
-    assert chord_label(chord) == label
-
-
-def test_chord_label_matches_chord_keys() -> None:
-    bad: list[int] = [
-        c for c in range(1, 1024) if chord_label(c).split(" ") != [KEY_LABELS[i] for i in chord_keys(c)]
-    ]
-    assert bad == []
-
-
-@pytest.mark.parametrize("chord", [0, 1024])
-def test_chord_label_out_of_range(chord: int) -> None:
-    with pytest.raises(ValueError):
-        chord_label(chord)
 
 
 # 5-6: help_order
@@ -210,6 +163,9 @@ def assert_tables_match(data: dict[str, Any], tables: dict[str, Table]) -> None:
         table: Table = tables[t["name"]]
         assert t["sha256"] == table_sha256(table)
         assert t["entries"] == [[p, c, chord_label(c)] for p, c in help_order(table)]
+        assert all(
+            label == " ".join(FINGERS[i] for i in range(10) if c >> i & 1) for _, c, label in t["entries"]
+        )
         seg: list[list[list[Any]]]
         phr: list[str]
         for seg, phr in ((t["segments"], data["phrases"]), (t["exam_segments"], data["exam_phrases"])):
@@ -227,8 +183,19 @@ def test_trainer_data_header_and_tables() -> None:
     home, exam = split_phrases(fragment(), 10, 60, 20, 100)
     data: dict[str, Any] = trainer_data([("base", base_table()), ("greedy", greedy_table())], home, exam, 5)
     assert data["format"] == DATA_FORMAT
-    assert data["version"] == VERSION
-    assert data["keys"] == [{"code": c, "label": lbl} for c, lbl in zip(KEY_CODES, KEY_LABELS, strict=True)]
+    assert set(data) == {
+        "format",
+        "version",
+        "fingers",
+        "help_key",
+        "exam_size",
+        "phrases",
+        "exam_phrases",
+        "tables",
+    }
+    assert data["version"] == VERSION == 2
+    assert data["fingers"] == list(FINGERS) == ["L4", "L3", "L2", "L1", "L0", "R0", "R1", "R2", "R3", "R4"]
+    assert "keys" not in data
     assert data["help_key"] == "Slash"
     assert data["exam_size"] == 5
     assert data["phrases"] == home
@@ -299,7 +266,7 @@ def test_write_and_read_data_js(tmp_path: Path) -> None:
 
 
 def good_middle() -> str:
-    return json.dumps({"format": DATA_FORMAT, "version": VERSION, "phrases": []})
+    return json.dumps({"format": DATA_FORMAT, "version": 2, "phrases": []})
 
 
 @pytest.mark.parametrize(
@@ -309,9 +276,9 @@ def good_middle() -> str:
         DATA_PREFIX + good_middle(),
         DATA_PREFIX + '{"format": ' + DATA_SUFFIX,
         DATA_PREFIX + json.dumps({"format": "other", "version": VERSION}) + DATA_SUFFIX,
-        DATA_PREFIX + json.dumps({"format": DATA_FORMAT, "version": 2}) + DATA_SUFFIX,
+        DATA_PREFIX + json.dumps({"format": DATA_FORMAT, "version": 3}) + DATA_SUFFIX,
     ],
-    ids=["no-prefix", "no-suffix", "bad-json", "other-format", "version-2"],
+    ids=["no-prefix", "no-suffix", "bad-json", "other-format", "version-3"],
 )
 def test_read_data_js_rejects(tmp_path: Path, text: str) -> None:
     path: Path = tmp_path / "data.js"
@@ -323,4 +290,12 @@ def test_read_data_js_rejects(tmp_path: Path, text: str) -> None:
 def test_read_data_js_accepts_minimal(tmp_path: Path) -> None:
     path: Path = tmp_path / "data.js"
     path.write_text(DATA_PREFIX + good_middle() + DATA_SUFFIX, encoding="utf-8", newline="\n")
-    assert read_data_js(path)["version"] == VERSION
+    assert read_data_js(path)["version"] == 2
+
+
+def test_read_data_js_version_1_is_no_longer_read(tmp_path: Path) -> None:
+    path: Path = tmp_path / "data.js"
+    text: str = DATA_PREFIX + json.dumps({"format": DATA_FORMAT, "version": 1, "phrases": []}) + DATA_SUFFIX
+    path.write_text(text, encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError, match="version 1 is no longer read"):
+        read_data_js(path)

@@ -10,11 +10,13 @@ import pandas as pd
 
 from steno_zero.drill import DrillLog, Presentation, drill_plan
 from steno_zero.keyboard import KeyboardProfile, profile_sha256
+from steno_zero.layout import Layout
 from steno_zero.price import PriceFit, fit_prices, presentations_frame
 from tests.drill_helpers import Plan
-from tests.keyboard_helpers import P1
+from tests.keyboard_helpers import P1, P1_BLOCKED
+from tests.layout_helpers import VM, layout_obj_of
 
-FINGER: tuple[int, ...] = (0, 1, 2, 3, 3, 3, 3, 2, 1, 0)
+FINGER: tuple[int, ...] = (0, 1, 2, 3, 4, 4, 3, 2, 1, 0)
 type Keyboard = tuple[str, str] | None
 
 
@@ -49,6 +51,7 @@ def synth_logs(
     keyboard: Keyboard = None,
     misses: bool = True,
     prefix: str = "s",
+    layout: Layout = VM,
 ) -> list[DrillLog]:
     """Block b is the session f"{prefix}{b}"; a miss types target ^ 1 (target ^ 2 if that is 0)."""
     rng: random.Random = random.Random(0)
@@ -78,6 +81,7 @@ def synth_logs(
                 1,
                 b,
                 6,
+                layout,
                 keyboard,
                 f"2026-11-10T00:{b:02d}:00.000Z",
                 "2026-11-10T01:00:00.000Z",
@@ -89,7 +93,9 @@ def synth_logs(
     return logs
 
 
-def extra_log(rows: list[tuple[int, int]], keyboard: Keyboard = None, session: str = "extra") -> DrillLog:
+def extra_log(
+    rows: list[tuple[int, int]], keyboard: Keyboard = None, session: str = "extra", layout: Layout = VM
+) -> DrillLog:
     """A late session of (target, typed) pairs, timed by the same rule with a total of truth(target)."""
     presentations: list[Presentation] = []
     shown: float = 1000.0
@@ -104,8 +110,8 @@ def extra_log(rows: list[tuple[int, int]], keyboard: Keyboard = None, session: s
         presentations.append(Presentation(i, target, typed, s, d, u))
         shown = u + 50.0
     return DrillLog(
-        session, 1, 99, 6, keyboard, "2026-11-11T00:00:00.000Z", "2026-11-11T01:00:00.000Z", "pytest", 6,
-        tuple(presentations),
+        session, 1, 99, 6, layout, keyboard, "2026-11-11T00:00:00.000Z", "2026-11-11T01:00:00.000Z",
+        "pytest", 6, tuple(presentations),
     )  # fmt: skip
 
 
@@ -124,7 +130,7 @@ def main_plan() -> Plan:
 
 @functools.cache
 def p1_plan() -> Plan:
-    return drill_plan(1, 30, 100, 6, P1)
+    return drill_plan(1, 30, 100, 6, P1_BLOCKED)
 
 
 @functools.cache
@@ -177,11 +183,12 @@ def log_json(log: DrillLog) -> str:
     return json.dumps(
         {
             "format": "steno-zero/drill-log",
-            "version": 1,
+            "version": 2,
             "session": log.session,
             "seed": log.seed,
             "block": log.block,
             "max_keys": log.max_keys,
+            "layout": layout_obj_of(log.layout),
             "keyboard": keyboard,
             "started": log.started,
             "finished": log.finished,

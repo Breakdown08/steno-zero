@@ -1,4 +1,4 @@
-"""Checks 12-18: strata and the drill plan."""
+"""Checks 19, 28a: strata and the drill plan, with and without blocked chords."""
 
 import json
 import subprocess
@@ -9,13 +9,14 @@ import pytest
 
 from steno_zero.chords import allowed_chords
 from steno_zero.drill import drill_plan, drill_strata
-from steno_zero.keyboard import Blocked, KeyboardProfile, available_chords, is_available
-from tests.drill_helpers import Plan, pair_chords, plan_default, plan_with, stratum_of
-from tests.keyboard_helpers import P2
+from tests.drill_helpers import LAPTOP_OLD_BLOCKED, Plan, pair_chords, plan_default, plan_with, stratum_of
+from tests.keyboard_helpers import P2_BLOCKED
 
-PAIRS_BLOCKED: KeyboardProfile = KeyboardProfile(
-    "pairs", "c", "2026-11-10T00:00:00.000Z", tuple(Blocked(c, False) for c in pair_chords())
-)
+PAIRS_BLOCKED: tuple[int, ...] = tuple(pair_chords())
+
+
+def is_free(chord: int, blocked: tuple[int, ...]) -> bool:
+    return not any(chord & b == b for b in blocked)
 
 
 def test_strata_without_profile() -> None:
@@ -33,12 +34,12 @@ def test_strata_without_profile() -> None:
         assert all(stratum_of(c) == key for c in strata[key])
 
 
-def test_strata_with_profile() -> None:
-    strata: dict[tuple[int, int], tuple[int, ...]] = drill_strata(6, P2)
+def test_strata_with_blocked() -> None:
+    strata: dict[tuple[int, int], tuple[int, ...]] = drill_strata(6, P2_BLOCKED)
     assert (5, 5) not in strata
     assert (5, 0) not in strata
     chords: list[int] = [c for group in strata.values() for c in group]
-    assert sorted(chords) == list(available_chords(6, P2))
+    assert sorted(chords) == [c for c in allowed_chords(6) if is_free(c, P2_BLOCKED)]
 
 
 def test_strata_bad_max_keys() -> None:
@@ -55,17 +56,17 @@ def test_plan_covers_every_chord() -> None:
     assert len(seen) == 847
 
 
-def test_plan_with_profile_covers_every_available_chord() -> None:
-    plan: Plan = plan_with(P2)
+def test_plan_with_blocked_covers_every_available_chord() -> None:
+    plan: Plan = plan_with(P2_BLOCKED)
     seen: set[int] = {c for block in plan for c in block}
-    assert all(is_available(c, P2) for c in seen)
-    assert len(seen) == len(available_chords(6, P2))
+    assert all(is_free(c, P2_BLOCKED) for c in seen)
+    assert len(seen) == len([c for c in allowed_chords(6) if is_free(c, P2_BLOCKED)])
     assert 31 not in seen
     assert 992 not in seen
 
 
-def check_balance(plan: Plan, max_keys: int, profile: KeyboardProfile | None) -> None:
-    strata: dict[tuple[int, int], tuple[int, ...]] = drill_strata(max_keys, profile)
+def check_balance(plan: Plan, max_keys: int, blocked: tuple[int, ...]) -> None:
+    strata: dict[tuple[int, int], tuple[int, ...]] = drill_strata(max_keys, blocked)
     ns: set[int] = {n for n, _ in strata}
     block: tuple[int, ...]
     for block in plan:
@@ -82,32 +83,32 @@ def check_balance(plan: Plan, max_keys: int, profile: KeyboardProfile | None) ->
 
 
 def test_balance_by_n_and_left_default() -> None:
-    check_balance(plan_default(), 6, None)
+    check_balance(plan_default(), 6, ())
 
 
-def test_balance_by_n_and_left_with_profile() -> None:
-    check_balance(plan_with(P2), 6, P2)
+def test_balance_by_n_and_left_with_blocked() -> None:
+    check_balance(plan_with(P2_BLOCKED), 6, P2_BLOCKED)
 
 
 def test_balance_small_plan() -> None:
-    check_balance(drill_plan(3, 5, 37, 4), 4, None)
+    check_balance(drill_plan(3, 5, 37, 4), 4, ())
 
 
-def check_stratum_balance(plan: Plan, profile: KeyboardProfile | None) -> None:
+def check_stratum_balance(plan: Plan, blocked: tuple[int, ...]) -> None:
     counts: Counter[int] = Counter(c for block in plan for c in block)
     key: tuple[int, int]
     group: tuple[int, ...]
-    for key, group in drill_strata(6, profile).items():
+    for key, group in drill_strata(6, blocked).items():
         per_chord: list[int] = [counts[c] for c in group]
         assert max(per_chord) - min(per_chord) <= 1, key
 
 
 def test_stratum_balance_default() -> None:
-    check_stratum_balance(plan_default(), None)
+    check_stratum_balance(plan_default(), ())
 
 
-def test_stratum_balance_with_profile() -> None:
-    check_stratum_balance(plan_with(P2), P2)
+def test_stratum_balance_with_blocked() -> None:
+    check_stratum_balance(plan_with(P2_BLOCKED), P2_BLOCKED)
 
 
 def no_repeats(plan: Plan) -> bool:
@@ -116,15 +117,16 @@ def no_repeats(plan: Plan) -> bool:
 
 def test_no_repeats_in_a_row() -> None:
     assert no_repeats(plan_default())
-    assert no_repeats(plan_with(P2))
+    assert no_repeats(plan_with(P2_BLOCKED))
     assert no_repeats(drill_plan(5, 20, 10, 2))
 
 
 def test_plan_is_deterministic() -> None:
     assert drill_plan(0, 5, 20, 6) == drill_plan(0, 5, 20, 6)
-    assert drill_plan(0, 5, 20, 6, None) == drill_plan(0, 5, 20, 6)
+    assert drill_plan(0, 5, 20, 6, ()) == drill_plan(0, 5, 20, 6)
     assert drill_plan(1, 5, 20, 6) != drill_plan(0, 5, 20, 6)
-    assert drill_plan(0, 5, 20, 6, P2) == drill_plan(0, 5, 20, 6, P2)
+    assert drill_plan(0, 5, 20, 6, P2_BLOCKED) == drill_plan(0, 5, 20, 6, P2_BLOCKED)
+    assert drill_plan(0, 5, 20, 6, P2_BLOCKED) != drill_plan(0, 5, 20, 6)
 
 
 def test_plan_same_in_another_process() -> None:
@@ -151,3 +153,27 @@ def test_plan_with_all_pairs_blocked_has_only_single_keys() -> None:
     assert {c for block in plan for c in block} <= {1, 2, 4, 8, 16, 32, 64, 128, 256, 512}
     assert no_repeats(plan)
     assert set(drill_strata(6, PAIRS_BLOCKED)) == {(1, 0), (1, 1)}
+
+
+def test_plan_for_the_migrated_laptop_blocks() -> None:
+    blocked: tuple[int, ...] = LAPTOP_OLD_BLOCKED
+    plan: Plan = drill_plan(0, 20, 100, 6, blocked)
+    assert len(plan) == 20
+    assert all(len(block) == 100 for block in plan)
+    assert all(is_free(c, blocked) and 1 <= c.bit_count() <= 6 for block in plan for c in block)
+    check_balance(plan, 6, blocked)
+    assert no_repeats(plan)
+    assert plan == drill_plan(0, 20, 100, 6, blocked)
+    assert plan != drill_plan(1, 20, 100, 6, blocked)
+    assert len(drill_strata(6, blocked)) <= 25
+    assert {c for group in drill_strata(6, blocked).values() for c in group} == {
+        c for c in allowed_chords(6) if is_free(c, blocked)
+    }
+
+
+def test_plan_without_blocks_equals_the_earlier_numbers() -> None:
+    assert drill_plan(0, 2, 12, 6) == (
+        (256, 804, 917, 76, 94, 533, 31, 18, 655, 800, 264, 16),
+        (692, 30, 8, 512, 66, 11, 744, 20, 672, 57, 543, 1000),
+    )
+    assert drill_plan(7, 1, 8, 4) == ((26, 3, 27, 224, 1, 96, 128, 960),)

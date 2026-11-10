@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
-from steno_zero.chords import check_max_keys, chord_costs
+from steno_zero.chords import allowed_chords, check_max_keys, chord_costs
 from steno_zero.corpus import fetch_corpus, load_corpus, split_corpus
 from steno_zero.drill import (
     DRILL_BLOCKS,
@@ -20,6 +20,7 @@ from steno_zero.drill import (
     DrillLog,
     drill_data,
     drill_strata,
+    read_drill_js,
     read_drill_log,
     write_drill_js,
 )
@@ -38,13 +39,17 @@ from steno_zero.keyboard import (
     KeyboardProfile,
     available_chords,
     build_profile,
+    finger_blocked,
+    keys_label,
     profile_json,
     read_calibration_log,
     read_profile,
 )
+from steno_zero.layout import LAYOUTS_DIR, Layout, read_layouts
 from steno_zero.params import DEFAULT_HORIZON, DEFAULT_MAX_KEYS, CostParams, PenaltyParams
 from steno_zero.plot import plot_log
 from steno_zero.rival import rival_table
+from steno_zero.setups import setups_data, write_setups_js
 from steno_zero.simulate import Score, evaluate
 from steno_zero.table import Table
 from steno_zero.trainer import (
@@ -55,7 +60,6 @@ from steno_zero.trainer import (
     PHRASE_MIN_LEN,
     TrainerLog,
     TrainerStats,
-    chord_label,
     read_trainer_log,
     split_phrases,
     trainer_data,
@@ -125,8 +129,12 @@ def _build_parser() -> argparse.ArgumentParser:
     drill.add_argument("--blocks", type=int, default=DRILL_BLOCKS)
     drill.add_argument("--size", type=int, default=DRILL_SIZE)
     drill.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
-    drill.add_argument("--keyboard", type=Path, default=None, metavar="PROFILE")
     drill.add_argument("--out", type=Path, default=Path("docs/drill.js"))
+    setups: argparse.ArgumentParser = trainer_sub.add_parser("setups", help="build docs/setups.js")
+    setups.add_argument("--layouts", type=Path, default=LAYOUTS_DIR)
+    setups.add_argument("--keyboards", type=Path, default=KEYBOARDS_DIR)
+    setups.add_argument("--drill", type=Path, default=Path("docs/drill.js"))
+    setups.add_argument("--out", type=Path, default=Path("docs/setups.js"))
 
     keyboard: argparse.ArgumentParser = sub.add_parser("keyboard", help="keyboard calibration")
     keyboard_sub: Any = keyboard.add_subparsers(dest="keyboard_command", required=True)
@@ -141,6 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pfit: argparse.ArgumentParser = price_sub.add_parser("fit", help="fit chord prices to drill logs")
     pfit.add_argument("logs", type=Path, nargs="+", metavar="LOG")
     pfit.add_argument("--keyboard", type=Path, default=None, metavar="PROFILE")
+    pfit.add_argument("--layout", default=None, metavar="NAME")
     pfit.add_argument("--out", type=Path, default=Path("runs/price"))
     pfit.add_argument("--target", choices=["total", "motor"], default="total")
     pfit.add_argument("--model", choices=["auto", "baseline", "ridge", "boosting"], default="auto")
@@ -345,10 +354,7 @@ def _trainer_stats(args: argparse.Namespace) -> int:
 
 
 def _trainer_drill(args: argparse.Namespace) -> int:
-    profile: KeyboardProfile | None = None
-    if args.keyboard is not None:
-        profile = _read_with_name(args.keyboard, read_profile)
-    data: dict[str, Any] = drill_data(args.seed, args.blocks, args.size, args.max_keys, profile)
+    data: dict[str, Any] = drill_data(args.seed, args.blocks, args.size, args.max_keys)
     write_drill_js(data, args.out)
     print(
         _dump(
@@ -358,13 +364,31 @@ def _trainer_drill(args: argparse.Namespace) -> int:
                 "blocks": args.blocks,
                 "size": args.size,
                 "max_keys": args.max_keys,
-                "keyboard": None if profile is None else profile.name,
-                "available": data["available"],
+                "available": len(allowed_chords(args.max_keys)),
                 "chords": len({c for block in data["blocks"] for c in block}),
-                "strata": len(drill_strata(args.max_keys, profile)),
+                "strata": len(drill_strata(args.max_keys)),
             }
         )
     )
+    return 0
+
+
+def _trainer_setups(args: argparse.Namespace) -> int:
+    if not args.layouts.is_dir():
+        raise ValueError(f"{args.layouts}: not a folder of layouts")
+    layouts: tuple[Layout, ...] = read_layouts(args.layouts)
+    profiles: list[KeyboardProfile] = []
+    if args.keyboards.is_dir():
+        path: Path
+        for path in sorted(args.keyboards.glob("*.json")):
+            profiles.append(_read_with_name(path, read_profile))
+    try:
+        drill: dict[str, Any] = read_drill_js(args.drill)
+    except ValueError as exc:
+        raise ValueError(f"{args.drill}: {exc}") from exc
+    data: dict[str, Any] = setups_data(layouts, profiles, drill)
+    write_setups_js(data, args.out)
+    print(_dump({"out": str(args.out), "setups": [x["name"] for x in data["setups"]]}))
     return 0
 
 
@@ -389,9 +413,10 @@ def _keyboard_command(args: argparse.Namespace) -> int:
             {
                 "out": str(out),
                 "name": profile.name,
-                "blocked": [chord_label(b.chord) for b in profile.blocked],
-                "unclear": [chord_label(b.chord) for b in profile.blocked if b.unclear],
-                "available": len(available_chords(args.max_keys, profile)),
+                "keys": list(profile.keys),
+                "blocked": [keys_label(b.keys) for b in profile.blocked],
+                "unclear": [keys_label(b.keys) for b in profile.blocked if b.unclear],
+                "available": len(available_chords(args.max_keys, finger_blocked(profile, log.layout))),
             }
         )
     )
@@ -402,6 +427,17 @@ def _price_command(args: argparse.Namespace) -> int:
     from steno_zero.price import PriceFit, fit_prices, presentations_frame
 
     logs: list[DrillLog] = [_read_with_name(p, read_drill_log) for p in args.logs]
+    if args.layout is not None:
+        logs = [x for x in logs if x.layout.name == args.layout]
+        if not logs:
+            raise ValueError(f"no drill logs of the layout {args.layout!r}")
+    counts: dict[str, int] = {}
+    log: DrillLog
+    for log in sorted(logs, key=lambda x: x.layout.name):
+        counts[log.layout.name] = counts.get(log.layout.name, 0) + 1
+    if len(counts) > 1:
+        listed: str = ", ".join(f"{n} ({k} sessions)" for n, k in counts.items())
+        print(f"warning: mixing drill logs of {len(counts)} layouts: {listed}", file=sys.stderr)
     profile: KeyboardProfile | None = None
     if args.keyboard is not None:
         profile = _read_with_name(args.keyboard, read_profile)
@@ -427,6 +463,7 @@ def _price_command(args: argparse.Namespace) -> int:
                 "mae_ms": {m: time[m]["mae_ms"] for m in time},
                 "miss_model": result.prices["miss_model"],
                 "keyboard": None if profile is None else profile.name,
+                "layouts": result.prices["layouts"],
                 "suspects": len(result.report["suspect_chords"]),
             }
         )
@@ -445,6 +482,8 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "trainer":
         if args.trainer_command == "drill":
             return _trainer_drill(args)
+        if args.trainer_command == "setups":
+            return _trainer_setups(args)
         return _trainer_export(args) if args.trainer_command == "export" else _trainer_stats(args)
     if args.command == "keyboard":
         return _keyboard_command(args)

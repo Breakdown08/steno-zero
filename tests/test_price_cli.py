@@ -1,4 +1,4 @@
-"""Checks 36-38: the price fit command."""
+"""Check 42: the price fit command, layouts and profiles."""
 
 import json
 from pathlib import Path
@@ -7,10 +7,14 @@ from typing import Any
 import pytest
 
 from steno_zero.cli import main
+from steno_zero.drill import DrillLog
 from steno_zero.keyboard import profile_json
+from steno_zero.layout import Layout
 from tests.keyboard_helpers import P1, P2
+from tests.layout_helpers import ZZ
 from tests.price_helpers import (
     keyboard_of,
+    log_json,
     main_logs,
     main_plan,
     p1_logs,
@@ -28,6 +32,7 @@ SUMMARY_KEYS: set[str] = {
     "mae_ms",
     "miss_model",
     "keyboard",
+    "layouts",
     "suspects",
 }
 
@@ -74,6 +79,7 @@ def test_fit_writes_prices_and_report(
     assert set(summary["mae_ms"]) == {"baseline", "ridge", "boosting"}
     assert summary["miss_model"] == prices["miss_model"]
     assert summary["keyboard"] is None
+    assert summary["layouts"] == ["qwerty-vm"]
     assert summary["suspects"] == len(report["suspect_chords"])
 
 
@@ -169,8 +175,74 @@ def test_fit_with_the_right_profile(
     assert run_fit(p1_files, out, "--keyboard", str(profile)) == 0
     assert last_line(capsys)["keyboard"] == "test"
     prices: dict[str, Any] = json.loads((out / "prices.json").read_text(encoding="utf-8"))
-    assert prices["available"] == 783
-    assert prices["unavailable"] == 64
-    unavailable: list[int] = [r["chord"] for r in prices["prices"] if not r["available"]]
-    assert 152 in unavailable
-    assert len(unavailable) == 64
+    assert len(prices["prices"]) == 847
+    assert "available" not in prices
+    assert all(r["time_ms"] is not None for r in prices["prices"])
+
+
+@pytest.fixture(scope="module")
+def two_layout_files(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
+    logs: list[DrillLog] = [
+        *synth_logs(main_plan()[:3], prefix="v"),
+        *synth_logs(main_plan()[3:6], prefix="z", layout=ZZ),
+    ]
+    return write_logs(logs, tmp_path_factory.mktemp("two"))
+
+
+def test_fit_warns_about_mixed_layouts(
+    two_layout_files: list[Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_fit(two_layout_files, tmp_path / "o") == 0
+    out_text: str
+    err_text: str
+    out_text, err_text = capsys.readouterr()
+    lines: list[str] = [x for x in err_text.splitlines() if x.startswith("warning: mixing drill logs of ")]
+    assert len(lines) == 1
+    assert "warning: mixing drill logs of 2 layouts" in lines[0]
+    assert "qwerty-vm" in lines[0]
+    assert "zz" in lines[0]
+    assert "3 sessions" in lines[0]
+    summary: dict[str, Any] = json.loads(out_text.strip().splitlines()[-1])
+    assert summary["layouts"] == ["qwerty-vm", "zz"]
+    report: dict[str, Any] = json.loads((tmp_path / "o" / "report.json").read_text(encoding="utf-8"))
+    assert [x["name"] for x in report["layouts"]] == ["qwerty-vm", "zz"]
+
+
+def test_fit_layout_option_filters(
+    two_layout_files: list[Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_fit(two_layout_files, tmp_path / "o", "--layout", "qwerty-vm") == 0
+    out_text: str
+    err_text: str
+    out_text, err_text = capsys.readouterr()
+    assert "warning:" not in err_text
+    summary: dict[str, Any] = json.loads(out_text.strip().splitlines()[-1])
+    assert summary["layouts"] == ["qwerty-vm"]
+    report: dict[str, Any] = json.loads((tmp_path / "o" / "report.json").read_text(encoding="utf-8"))
+    assert [s["session"] for s in report["sessions"]] == ["v0", "v1", "v2"]
+
+
+def test_fit_layout_option_with_no_logs_left(
+    two_layout_files: list[Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    expect_error(run_fit(two_layout_files, tmp_path / "o", "--layout", "nope"), capsys)
+
+
+def test_fit_rejects_one_layout_name_with_other_codes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    other: Layout = Layout("qwerty-vm", ZZ.codes, ZZ.labels)
+    logs: list[DrillLog] = [
+        *synth_logs(main_plan()[:3], prefix="v"),
+        *synth_logs(main_plan()[3:6], prefix="w", layout=other),
+    ]
+    expect_error(run_fit(write_logs(logs, tmp_path / "x"), tmp_path / "o"), capsys)
+
+
+def test_fit_rejects_version_1_logs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path: Path = tmp_path / "old.json"
+    old: dict[str, Any] = json.loads(log_json(main_logs()[0]))
+    old["version"] = 1
+    del old["layout"]
+    path.write_text(json.dumps(old), encoding="utf-8")
+    expect_error(run_fit([path], tmp_path / "o"), capsys, "version 1 is no longer read")

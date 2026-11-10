@@ -1,4 +1,4 @@
-"""Checks 19-21: drill.js data, the trainer drill command and the committed drill.js."""
+"""Checks 18, 20-23: drill.js data, the trainer drill command and the committed drill.js."""
 
 import json
 import subprocess
@@ -17,61 +17,21 @@ from steno_zero.drill import (
     read_drill_js,
     write_drill_js,
 )
-from steno_zero.keyboard import (
-    KeyboardProfile,
-    available_chords,
-    calibration_chords,
-    profile_json,
-    profile_sha256,
-    read_profile,
-)
+from steno_zero.keyboard import calibration_chords
 from tests.helpers import ROOT
-from tests.keyboard_helpers import P1
 
-DATA_KEYS: set[str] = {
-    "format",
-    "version",
-    "seed",
-    "max_keys",
-    "size",
-    "keyboard",
-    "available",
-    "calibration",
-    "blocks",
-}
-SUMMARY_KEYS: set[str] = {
-    "out",
-    "seed",
-    "blocks",
-    "size",
-    "max_keys",
-    "keyboard",
-    "available",
-    "chords",
-    "strata",
-}
+DATA_KEYS: set[str] = {"format", "version", "seed", "max_keys", "size", "calibration", "blocks"}
+SUMMARY_KEYS: set[str] = {"out", "seed", "blocks", "size", "max_keys", "available", "chords", "strata"}
 
 
-def test_drill_data_without_profile() -> None:
+def test_drill_data() -> None:
     data: dict[str, Any] = drill_data(2, 3, 12, 6)
     assert set(data) == DATA_KEYS
     assert data["format"] == "steno-zero/drill-plan"
-    assert data["version"] == 1
-    assert data["seed"] == 2
-    assert data["max_keys"] == 6
-    assert data["size"] == 12
-    assert data["keyboard"] is None
-    assert data["available"] == 847
+    assert data["version"] == 2
+    assert (data["seed"], data["max_keys"], data["size"]) == (2, 6, 12)
     assert data["calibration"] == list(calibration_chords())
     assert data["blocks"] == [list(b) for b in drill_plan(2, 3, 12, 6)]
-
-
-def test_drill_data_with_profile() -> None:
-    data: dict[str, Any] = drill_data(0, 2, 10, 6, P1)
-    assert data["keyboard"] == {"name": "test", "sha256": profile_sha256(P1), "blocked": [152]}
-    assert data["available"] == 783
-    assert data["calibration"] == list(calibration_chords())
-    assert data["blocks"] == [list(b) for b in drill_plan(0, 2, 10, 6, P1)]
 
 
 def test_drill_js_text_and_round_trip(tmp_path: Path) -> None:
@@ -90,7 +50,7 @@ def write(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def test_read_drill_js_rejects(tmp_path: Path) -> None:
+def test_read_drill_js_rejects_version_1_and_the_rest(tmp_path: Path) -> None:
     data: dict[str, Any] = drill_data(0, 2, 10, 6)
     good: str = drill_js(data)
     assert read_drill_js(write(tmp_path, good)) == data
@@ -99,7 +59,8 @@ def test_read_drill_js_rejects(tmp_path: Path) -> None:
         good.removesuffix(DRILL_SUFFIX),
         DRILL_PREFIX + "{nope" + DRILL_SUFFIX,
         drill_js({**data, "format": "steno-zero/trainer-data"}),
-        drill_js({**data, "version": 2}),
+        drill_js({**data, "version": 1}),
+        drill_js({**data, "version": 3}),
     ]
     text: str
     for text in bad:
@@ -118,11 +79,7 @@ def test_drill_command_bytes_and_summary(tmp_path: Path, capsys: pytest.CaptureF
     summary: dict[str, Any] = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert set(summary) == SUMMARY_KEYS
     assert summary["out"] == str(out)
-    assert summary["seed"] == 0
-    assert summary["blocks"] == 4
-    assert summary["size"] == 20
-    assert summary["max_keys"] == 6
-    assert summary["keyboard"] is None
+    assert (summary["seed"], summary["blocks"], summary["size"], summary["max_keys"]) == (0, 4, 20, 6)
     assert summary["available"] == 847
     assert summary["strata"] == 25
     assert 1 <= summary["chords"] <= 80
@@ -132,15 +89,11 @@ def test_drill_command_bytes_and_summary(tmp_path: Path, capsys: pytest.CaptureF
     assert out.read_bytes() == first
 
 
-def test_drill_command_with_keyboard(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    profile_path: Path = tmp_path / "test.json"
-    profile_path.write_text(profile_json(P1), encoding="utf-8")
-    out: Path = tmp_path / "drill.js"
-    assert main(drill_args(out, "--keyboard", str(profile_path))) == 0
-    summary: dict[str, Any] = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert summary["keyboard"] == "test"
-    assert summary["available"] == summary["chords"] == 783
-    assert read_drill_js(out)["keyboard"]["sha256"] == profile_sha256(read_profile(profile_json(P1)))
+def test_drill_command_has_no_keyboard_option(tmp_path: Path) -> None:
+    info: pytest.ExceptionInfo[SystemExit]
+    with pytest.raises(SystemExit) as info:
+        main(["trainer", "drill", "--keyboard", "x", "--out", str(tmp_path / "d.js")])
+    assert info.value.code == 2
 
 
 def test_drill_command_size_too_small(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -154,19 +107,4 @@ def test_committed_drill_js() -> None:
     path: Path = ROOT / "docs" / "drill.js"
     assert path.is_file()
     assert subprocess.run(["git", "check-ignore", "-q", "docs/drill.js"], cwd=ROOT).returncode == 1
-    data: dict[str, Any] = read_drill_js(path)
-    assert data["seed"] == 0
-    assert data["size"] == 100
-    assert data["max_keys"] == 6
-    assert len(data["blocks"]) == 100
-    keyboard: dict[str, Any] | None = data["keyboard"]
-    text: str = path.read_text(encoding="utf-8")
-    if keyboard is None:
-        assert text == drill_js(drill_data(0, 100, 100, 6))
-        return
-    profile_path: Path = ROOT / "data" / "keyboards" / f"{keyboard['name']}.json"
-    assert profile_path.is_file()
-    profile: KeyboardProfile = read_profile(profile_path.read_text(encoding="utf-8"))
-    assert profile_sha256(profile) == keyboard["sha256"]
-    assert text == drill_js(drill_data(0, 100, 100, 6, profile))
-    assert data["available"] == len(available_chords(6, profile))
+    assert path.read_text(encoding="utf-8") == drill_js(drill_data(0, 100, 100, 6))

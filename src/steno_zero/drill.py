@@ -3,23 +3,18 @@
 import json
 import random
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
 from steno_zero.chords import N_CHORDS
-from steno_zero.keyboard import (
-    NAME_PATTERN,
-    KeyboardProfile,
-    available_chords,
-    calibration_chords,
-    profile_sha256,
-)
+from steno_zero.keyboard import available_chords, calibration_chords
+from steno_zero.layout import NAME_PATTERN, Layout, LayoutError, layout_from_obj
 
 DRILL_PLAN_FORMAT: str = "steno-zero/drill-plan"
 DRILL_LOG_FORMAT: str = "steno-zero/drill-log"
-DRILL_VERSION: int = 1
+DRILL_VERSION: int = 2
 DRILL_PREFIX: str = "window.STENO_ZERO_DRILL = "
 DRILL_SUFFIX: str = ";\n"
 DRILL_SEED: int = 0
@@ -34,12 +29,10 @@ type Stratum = tuple[int, int]
 class DrillLogError(ValueError): ...
 
 
-def drill_strata(
-    max_keys: int, profile: KeyboardProfile | None = None
-) -> dict[tuple[int, int], tuple[int, ...]]:
+def drill_strata(max_keys: int, blocked: Sequence[int] = ()) -> dict[tuple[int, int], tuple[int, ...]]:
     groups: dict[Stratum, list[int]] = {}
     chord: int
-    for chord in available_chords(max_keys, profile):
+    for chord in available_chords(max_keys, blocked):
         groups.setdefault((chord.bit_count(), (chord & LEFT_MASK).bit_count()), []).append(chord)
     return {key: tuple(groups[key]) for key in sorted(groups)}
 
@@ -104,9 +97,9 @@ def _block(
 
 
 def drill_plan(
-    seed: int, blocks: int, size: int, max_keys: int, profile: KeyboardProfile | None = None
+    seed: int, blocks: int, size: int, max_keys: int, blocked: Sequence[int] = ()
 ) -> tuple[tuple[int, ...], ...]:
-    strata: dict[Stratum, tuple[int, ...]] = drill_strata(max_keys, profile)
+    strata: dict[Stratum, tuple[int, ...]] = drill_strata(max_keys, blocked)
     ns: list[int] = sorted({n for n, _ in strata})
     if blocks < 1:
         raise ValueError("blocks must be at least 1")
@@ -119,25 +112,14 @@ def drill_plan(
     return tuple(_block(size, ns, strata, decks, rng) for _ in range(blocks))
 
 
-def drill_data(
-    seed: int, blocks: int, size: int, max_keys: int, profile: KeyboardProfile | None = None
-) -> dict[str, Any]:
-    plan: tuple[tuple[int, ...], ...] = drill_plan(seed, blocks, size, max_keys, profile)
-    keyboard: dict[str, Any] | None = None
-    if profile is not None:
-        keyboard = {
-            "name": profile.name,
-            "sha256": profile_sha256(profile),
-            "blocked": [b.chord for b in profile.blocked],
-        }
+def drill_data(seed: int, blocks: int, size: int, max_keys: int) -> dict[str, Any]:
+    plan: tuple[tuple[int, ...], ...] = drill_plan(seed, blocks, size, max_keys)
     return {
         "format": DRILL_PLAN_FORMAT,
         "version": DRILL_VERSION,
         "seed": seed,
         "max_keys": max_keys,
         "size": size,
-        "keyboard": keyboard,
-        "available": len(available_chords(max_keys, profile)),
         "calibration": list(calibration_chords()),
         "blocks": [list(b) for b in plan],
     }
@@ -162,12 +144,14 @@ def read_drill_js(path: Path) -> dict[str, Any]:
         obj: Any = json.loads(text[len(DRILL_PREFIX) : len(text) - len(DRILL_SUFFIX)])
     except ValueError as exc:
         raise ValueError(f"bad drill.js JSON: {exc}") from exc
+    if isinstance(obj, dict) and obj.get("format") == DRILL_PLAN_FORMAT and obj.get("version") == 1:
+        raise ValueError("drill plan version 1 is no longer read")
     if (
         not isinstance(obj, dict)
         or obj.get("format") != DRILL_PLAN_FORMAT
         or obj.get("version") != DRILL_VERSION
     ):
-        raise ValueError("not a steno-zero drill plan, version 1")
+        raise ValueError(f"not a steno-zero drill plan, version {DRILL_VERSION}")
     return obj
 
 
@@ -187,6 +171,7 @@ class DrillLog:
     seed: int
     block: int
     max_keys: int
+    layout: Layout
     keyboard: tuple[str, str] | None
     started: str
     finished: str
@@ -212,15 +197,14 @@ def _number(value: object, name: str) -> float:
     return value
 
 
-def _presentation(raw: object, index: int, max_keys: int) -> Presentation:
+def _presentation(raw: object, max_keys: int) -> Presentation:
     if not isinstance(raw, dict):
         raise DrillLogError("presentation must be an object")
     name: str
     for name in ("i", "target", "typed", "shown_ms", "down_ms", "up_ms"):
         if name not in raw:
             raise DrillLogError(f"presentation has no {name}")
-    if _int(raw["i"], "i", 0, None) != index:
-        raise DrillLogError(f"presentation i must be {index}")
+    index: int = _int(raw["i"], "i", 0, None)
     target: int = _int(raw["target"], "target", 1, N_CHORDS)
     if target.bit_count() > max_keys:
         raise DrillLogError(f"target {target} has more than {max_keys} keys")
@@ -255,8 +239,10 @@ def read_drill_log(text: str) -> DrillLog:
     if not isinstance(obj, dict):
         raise DrillLogError("log must be an object")
     version: Any = obj.get("version")
+    if obj.get("format") == DRILL_LOG_FORMAT and version == 1 and not isinstance(version, bool):
+        raise DrillLogError("drill log version 1 is no longer read")
     if obj.get("format") != DRILL_LOG_FORMAT or isinstance(version, bool) or version != DRILL_VERSION:
-        raise DrillLogError("not a steno-zero drill log, version 1")
+        raise DrillLogError(f"not a steno-zero drill log, version {DRILL_VERSION}")
     strings: dict[str, str] = {}
     key: str
     for key in ("session", "started", "finished", "user_agent"):
@@ -270,23 +256,29 @@ def read_drill_log(text: str) -> DrillLog:
     block: int = _int(obj.get("block"), "block", 0, None)
     max_keys: int = _int(obj.get("max_keys"), "max_keys", 2, 10)
     max_held: int = _int(obj.get("max_held"), "max_held", 0, 10)
+    try:
+        layout: Layout = layout_from_obj(obj.get("layout"))
+    except LayoutError as exc:
+        raise DrillLogError(f"layout: {exc}") from exc
     keyboard: tuple[str, str] | None = _keyboard(obj.get("keyboard"))
     raw_rows: Any = obj.get("presentations")
     if not isinstance(raw_rows, list) or not raw_rows:
         raise DrillLogError("presentations must be a non-empty list")
     rows: list[Presentation] = []
-    index: int
     raw: Any
-    for index, raw in enumerate(raw_rows):
-        row: Presentation = _presentation(raw, index, max_keys)
+    for raw in raw_rows:
+        row: Presentation = _presentation(raw, max_keys)
+        if rows and row.i <= rows[-1].i:
+            raise DrillLogError(f"presentation i must increase: {row.i} after {rows[-1].i}")
         if rows and row.shown_ms < rows[-1].up_ms:
-            raise DrillLogError(f"presentation {index} is shown before the previous one is released")
+            raise DrillLogError(f"presentation {row.i} is shown before the previous one is released")
         rows.append(row)
     return DrillLog(
         session=strings["session"],
         seed=seed,
         block=block,
         max_keys=max_keys,
+        layout=layout,
         keyboard=keyboard,
         started=strings["started"],
         finished=strings["finished"],

@@ -1,4 +1,4 @@
-"""Check 11: the keyboard profile command."""
+"""Check 43: the keyboard profile command."""
 
 import json
 from pathlib import Path
@@ -7,10 +7,10 @@ from typing import Any
 import pytest
 
 from steno_zero.cli import main
-from steno_zero.keyboard import KeyboardProfile, available_chords, profile_json, read_profile
-from tests.keyboard_helpers import CHECK5, calibration_text
+from steno_zero.keyboard import KeyboardProfile, profile_json, read_profile
+from tests.keyboard_helpers import CHECK5, calibration_text, count_available
 
-SUMMARY_KEYS: set[str] = {"out", "name", "blocked", "unclear", "available"}
+SUMMARY_KEYS: set[str] = {"out", "name", "keys", "blocked", "unclear", "available"}
 
 
 def write_log(tmp_path: Path, overrides: dict[int, list[int]] | None = None) -> Path:
@@ -28,10 +28,10 @@ def test_profile_command_summary_and_bytes(tmp_path: Path, capsys: pytest.Captur
     assert set(summary) == SUMMARY_KEYS
     assert summary["out"] == str(out)
     assert summary["name"] == "test"
-    assert summary["blocked"] == ["a s d", "f v k"]
-    assert summary["unclear"] == ["a s d"]
+    assert summary["blocked"] == ["KeyA+KeyD+KeyS", "KeyF+KeyK+KeyV"]
+    assert summary["unclear"] == ["KeyA+KeyD+KeyS"]
+    assert summary["available"] == count_available(6, (7, 152))
     profile: KeyboardProfile = read_profile(out.read_text(encoding="utf-8"))
-    assert summary["available"] == len(available_chords(6, profile))
     assert out.read_text(encoding="utf-8") == profile_json(profile)
     assert main(["keyboard", "profile", str(log), "--name", "test", "--out", str(out)]) == 0
     capsys.readouterr()
@@ -45,8 +45,7 @@ def test_profile_command_max_keys(tmp_path: Path, capsys: pytest.CaptureFixture[
         main(["keyboard", "profile", str(log), "--name", "test", "--out", str(out), "--max-keys", "4"]) == 0
     )
     summary: dict[str, Any] = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    profile: KeyboardProfile = read_profile(out.read_text(encoding="utf-8"))
-    assert summary["available"] == len(available_chords(4, profile))
+    assert summary["available"] == count_available(4, (7, 152))
 
 
 def test_profile_command_rejects_target_outside_the_list(
@@ -60,6 +59,16 @@ def test_profile_command_rejects_target_outside_the_list(
     assert main(["keyboard", "profile", str(log), "--name", "test", "--out", str(out)]) == 1
     assert "error:" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_profile_command_version_1_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    obj: dict[str, Any] = json.loads(calibration_text())
+    obj["version"] = 1
+    del obj["layout"]
+    log: Path = tmp_path / "v1.json"
+    log.write_text(json.dumps(obj), encoding="utf-8")
+    assert main(["keyboard", "profile", str(log), "--name", "test", "--out", str(tmp_path / "k.json")]) == 1
+    assert "version 1 is no longer read" in capsys.readouterr().err
 
 
 def test_profile_command_incomplete_calibration(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

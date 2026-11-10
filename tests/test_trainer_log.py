@@ -1,4 +1,4 @@
-"""Checks 19-25: exam log reading and statistics."""
+"""Check 36: exam log reading (version 2, layout) and statistics."""
 
 import json
 import random
@@ -17,6 +17,7 @@ from steno_zero.trainer import (
     read_trainer_log,
     trainer_stats,
 )
+from tests.layout_helpers import VM
 from tests.trainer_helpers import EXAMPLE, STARTED, Row, example_text, log_dict, log_text
 
 MISSING: object = object()
@@ -38,6 +39,11 @@ def corrupted(path: tuple[str | int, ...], value: object) -> str:
 # 19: reading
 
 
+def corrupted_keys() -> list[dict[str, str]]:
+    keys: list[dict[str, str]] = log_dict(EXAMPLE)["layout"]["keys"]
+    return keys[:9]
+
+
 def test_read_example_log() -> None:
     log: TrainerLog = read_trainer_log(example_text())
     assert log.session == "s1"
@@ -46,6 +52,7 @@ def test_read_example_log() -> None:
     assert log.started == STARTED
     assert log.finished == "2026-11-08T10:02:31.412Z"
     assert log.user_agent == "pytest"
+    assert log.layout == VM
     assert log.max_held == 3
     assert log.phrases == (0,)
     assert log.chars == 4
@@ -67,7 +74,12 @@ BAD: dict[str, str] = {
     "broken-json": '{"format": ',
     "root-list": "[]",
     "other-format": corrupted(("format",), "other"),
-    "version-2": corrupted(("version",), 2),
+    "version-3": corrupted(("version",), 3),
+    "no-layout": corrupted(("layout",), MISSING),
+    "layout-null": corrupted(("layout",), None),
+    "layout-nine-keys": corrupted(("layout", "keys"), corrupted_keys()),
+    "layout-bad-name": corrupted(("layout", "name"), "Qwerty"),
+    "layout-reserved-code": corrupted(("layout", "keys", 0, "code"), "Slash"),
     "no-session": corrupted(("session",), MISSING),
     "empty-session": corrupted(("session",), ""),
     "no-finished": corrupted(("finished",), MISSING),
@@ -97,6 +109,14 @@ def test_read_rejects(text: str) -> None:
         read_trainer_log(text)
 
 
+def test_version_1_is_no_longer_read() -> None:
+    data: dict[str, Any] = log_dict(EXAMPLE)
+    data["version"] = 1
+    del data["layout"]
+    with pytest.raises(TrainerLogError, match="version 1 is no longer read"):
+        read_trainer_log(json.dumps(data))
+
+
 def test_trainer_log_error_is_value_error() -> None:
     assert issubclass(TrainerLogError, ValueError)
     with pytest.raises(ValueError):
@@ -115,8 +135,8 @@ def test_stats_example() -> None:
     assert stats.slip_prob == pytest.approx(1 / 56)
     assert stats.median_ms == 200.0
     assert stats.chords == (
-        ChordStats(8, "f", 4, 2, 0, None, ((9, 1), (1023, 1))),
-        ChordStats(72, "f j", 2, 2, 1, 200.0, ()),
+        ChordStats(8, "L1", 4, 2, 0, None, ((9, 1), (1023, 1))),
+        ChordStats(72, "L1 R1", 2, 2, 1, 200.0, ()),
     )
     assert len(stats.sessions) == 1
     s: SessionStats = stats.sessions[0]

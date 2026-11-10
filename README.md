@@ -92,6 +92,25 @@ Command: `uv run steno-zero evolve --generations 1000 --sample-chars 0 --workers
 
 The `K = 6` table has chords of up to 6 keys (distribution by number of keys 1..6: 10, 17, 58, 36, 27, 11); the unlimited one has two chords on 7 keys. These numbers describe the placeholder cost model, not a real keyboard.
 
+## Fingers and layouts
+
+A chord is a set of fingers, not of letters. Bit `i` of a chord is the finger `FINGERS[i]`:
+
+| bit | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| finger | `L4` | `L3` | `L2` | `L1` | `L0` | `R0` | `R1` | `R2` | `R3` | `R4` |
+| meaning | left little | left ring | left middle | left index | left thumb | right thumb | right index | right middle | right ring | right little |
+
+The digits count like a guitar fingering: the thumb is `0` because it presses from below, the four fingers above the keys are numbered in a row from the index (`1`) to the little finger (`4`). Mirrored fingers share a digit (`L1` and `R1`), which is what the price feature `mirror` looks at. A chord label is the finger names in bit order: `L1 R1` is bit 3 and bit 6. Tables, logs, reports and the page speak in fingers.
+
+Which physical key a finger presses is data, not code: a layout is a file `data/layouts/NAME.json` (format `steno-zero/layout`, version 1) with ten items `finger`, `code` (a `KeyboardEvent.code`, so the OS keyboard layout does not matter) and `label` (what the page shows on the fingertip). The current layout is `qwerty-vm`, the right thumb on `KeyM`:
+
+| finger | `L4` | `L3` | `L2` | `L1` | `L0` | `R0` | `R1` | `R2` | `R3` | `R4` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| key | `KeyA` | `KeyS` | `KeyD` | `KeyF` | `KeyV` | `KeyM` | `KeyJ` | `KeyK` | `KeyL` | `Semicolon` |
+
+To add a layout, put a file into `data/layouts/` and run `uv run steno-zero trainer setups`. That rebuilds `docs/setups.js`, the list of setups (a layout, with a keyboard profile that covers its keys, if there is one) the page chooses from (`index.html?setup=NAME`). No code changes, and `docs/drill.js` and `docs/data.js` are not rebuilt. The help key `Slash` and the skip key `Escape` cannot be used by a layout.
+
 ## Trainer
 
 A static browser page for typing phrases with a table on an ordinary keyboard. It exists to measure how long a person takes per chord and how often they hit a neighbouring chord; the prices in `CostParams`, `slip_prob` and `confusion_s` are still placeholders. Open `docs/index.html` from disk, or serve the `docs/` folder with GitHub Pages. The page has no build step, no npm and no external links; the interface is in Russian.
@@ -106,18 +125,13 @@ uv run steno-zero trainer export --table rival=runs/rival-train.json \
 
 The first table is the one opened by default; `index.html?table=evolved` picks another. `export` takes 200 home phrases from the train part of the corpus and 100 exam phrases from the test part (the two sets do not intersect), cuts each phrase with the same greedy segmentation as the simulator and writes everything, layout included, to one file. Running it again gives the same bytes. Options: `--corpus`, `--min-len`, `--max-len`, `--home-limit`, `--exam-limit`, `--exam-size`, `--out`.
 
-Layout: key `i` is bit `i` of the chord. The page reads `KeyboardEvent.code`, so the OS keyboard layout does not matter.
-
-| i | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| key | `a` | `s` | `d` | `f` | `v` | `n` | `j` | `k` | `l` | `;` |
-| finger | left little | left ring | left middle | left index | left index, down | right index, down | right index | right middle | right ring | right little |
+The layout (finger to key) comes from the chosen setup, see "Fingers and layouts". The page shows two hands drawn in SVG, with the finger name and the key letter on each fingertip, and lights the tips in real time: yellow with a dashed outline for a finger that is needed but not held, green with a solid outline for a needed finger that is held, red with a solid outline and a cross for an extra finger. Where the page shows no goal (the exam, the home without a hint) a held finger is simply green: only the fact of the press. The exam therefore shows nothing that is a hint.
 
 The help key is the physical `/` key (`Slash`, `.` on a Russian layout).
 
-A chord fires when all its keys are released: press the keys together, let go, and the chord is the set of keys held since the first press. A wrong chord is not accepted and the piece must be repeated (strict mode); there is no backspace.
+A chord fires when all its keys are released: press the keys together, let go, and the chord is the set of keys held since the first press. Since the hands show the fingers live, a wrong or missing finger **can be fixed before release**: let go of the red finger, press the yellow one, and the chord is still counted as a hit. A wrong chord is not accepted and the piece must be repeated (strict mode); there is no backspace.
 
-Two modes. Home: phrase after phrase, help on the `/` key, a hint for the next piece, nothing is recorded. Exam (the "Экзамен" button): 5 random phrases from the exam set, no help and no hint, a timer that starts at the first key press. **Measurements are written only in the exam.** At the end the page shows the time, symbols per minute and misses, and "Скачать журнал" saves a JSON log (`steno-zero-<session>.json`, format `steno-zero/trainer-log`, version 1: session, table and its SHA-256, start and finish, user agent, the largest number of keys held at once, phrase indices and one record `phrase, pos, target, typed, down_ms, up_ms` per fired chord). An aborted exam leaves nothing.
+Two modes. Home: phrase after phrase, help on the `/` key, a hint for the next piece, nothing is recorded. Exam (the "Экзамен" button): 5 random phrases from the exam set, no help and no hint, a timer that starts at the first key press. **Measurements are written only in the exam.** At the end the page shows the time, symbols per minute and misses, and "Скачать журнал" saves a JSON log (`steno-zero-<session>.json`, format `steno-zero/trainer-log`, version 2: session, table and its SHA-256, start and finish, user agent, the layout, the largest number of keys held at once, phrase indices and one record `phrase, pos, target, typed, down_ms, up_ms` per fired chord). An aborted exam leaves nothing.
 
 ```
 uv run steno-zero trainer stats runs/trainer/*.json --out runs/trainer/stats.json
@@ -129,37 +143,45 @@ uv run steno-zero trainer stats runs/trainer/*.json --out runs/trainer/stats.jso
 
 The exam measures only the 41-159 chords of one table, but a price model has to cover every chord the keyboard can type. So the page has two more modes, both written to separate logs.
 
-**Keyboard facts.** The laptop passes at most 6 keys held together, and its matrix has no diodes, so some triples are swallowed: with `f v` held, `k` (also `l`, `;`) never reaches the kernel, while `f v j` passes. A keyboard on Vial sees all 10 keys in the matrix but hands the browser at most 6 (a 6KRO report). A swallowed key looks in a log exactly like a human slip (the same chord without one key), so the keyboard is calibrated once before any measurement.
+**Keyboard facts.** The laptop passes at most 6 keys held together, and its matrix has no diodes, so some triples are swallowed: with `KeyF` and `KeyV` held, `KeyK` (also `KeyL`, `Semicolon`) never reaches the kernel, while `KeyF`, `KeyV` and `KeyJ` pass. A keyboard on Vial sees all 10 keys in the matrix but hands the browser at most 6 (a 6KRO report). A swallowed key looks in a log exactly like a human slip (the same chord without one key), so the keyboard is calibrated once before any measurement. While calibrating, a finger that stays yellow with its key held is a key the keyboard swallowed.
 
 **Calibration** ("Калибровка клавиатуры"): the 45 pairs and 120 triples, each up to three attempts (about 5-6 minutes), and the page saves a `steno-zero/keyboard-calibration` log. Then
 
 ```
-uv run steno-zero keyboard profile calibration.json --name laptop   # writes data/keyboards/laptop.json
+uv run steno-zero keyboard profile calibration.json --name laptop-vm   # writes data/keyboards/laptop-vm.json
 ```
 
-builds a **keyboard profile**, the list of unavailable combinations. A combination that never passed is blocked; only minimal blocked combinations are kept (a triple holding a blocked pair is not listed), and `unclear` marks one where an extra key arrived at least once (it may be a human slip, but it is excluded anyway; calibrate again and compare). A matrix without diodes blocks three keys in three corners of a rectangle, so a chord is unavailable exactly when it holds a blocked pair or triple; this is an assumption about the firmware, not a checked fact, and `price fit` lists suspicious chords as a safety net. The profile file is committed (`data/keyboards/`, no user agent in it) and is read by `read_profile`, which accepts blocked combinations of any length >= 2, so a suspicious chord can be added by hand. `--max-keys` only changes the `available` number of the summary.
+builds a **keyboard profile**, the list of unavailable combinations of physical keys (`keyboard-profile` version 2 stores `KeyboardEvent.code` values, not fingers: a swallowed combination is a fact about the keys, whatever fingers they carry). A combination that never passed is blocked; only minimal blocked combinations are kept (a triple holding a blocked pair is not listed), and `unclear` marks one where an extra key arrived at least once (it may be a human slip, but it is excluded anyway; calibrate again and compare). A matrix without diodes blocks three keys in three corners of a rectangle, so a chord is unavailable exactly when it holds a blocked pair or triple; this is an assumption about the firmware, not a checked fact, and `price fit` lists suspicious chords as a safety net. The profile file is committed (`data/keyboards/`, no user agent in it) and is read by `read_profile`, which accepts blocked combinations of any length >= 2, so a suspicious chord can be added by hand. `--max-keys` only changes the `available` number of the summary (counted for the layout of the log).
+
+Blocked fingers are derived from the profile through a layout. If the fingers are moved onto keys the profile already covers, no new calibration is needed; if a finger moves to a new key, only that needs a new calibration, and `trainer setups` and `price fit` say `not calibrated:` with the keys. The committed profile `data/keyboards/laptop-vn.json` is the first laptop calibration translated from the old layout (right thumb on `KeyN`): it does not cover `qwerty-vm` (no `KeyM`), so there is no setup with it, but what it knows about `KeyA`, `KeyS`, `KeyD`, `KeyF`, `KeyV`, `KeyJ`, `KeyK`, `KeyL` and `Semicolon` stays available to a layout that moves the thumb. `qwerty-vm` needs a new calibration.
 
 **Random chords** ("Случайные аккорды"): the page shows a chord on a ten-key scheme with its label, you press it, and the page writes the time and the miss. A miss is not repeated: the wrong chord flashes red and the next one comes at once. The sequence is built in Python and played by the page, so all checked logic stays out of JS:
 
 ```
-uv run steno-zero trainer drill --keyboard data/keyboards/laptop.json   # writes docs/drill.js
+uv run steno-zero trainer drill      # writes docs/drill.js
+uv run steno-zero trainer setups     # writes docs/setups.js
 ```
 
-`docs/drill.js` holds 100 blocks of 100 chords (seed 0, `--max-keys 6`), the keyboard name with its SHA-256 and the calibration queue, and is rebuilt byte for byte from these parameters and the profile in `data/keyboards/`. The committed file is built without a profile until the laptop is calibrated; the page then warns that chords swallowed by the keyboard will give false misses. The sampling is deliberately not uniform over chords: every block is balanced by the number of keys, then by the number of keys on the left hand, and inside a stratum chords come from a shuffled deck, so one-handed chords with many keys are measured too (small strata repeat often by design). Only available chords are drawn and no chord repeats in a row. `index.html?block=N` replays block `N`; otherwise a block is random.
+`docs/drill.js` holds 100 blocks of 100 chords over all chords of up to `--max-keys 6` fingers (seed 0) and the calibration queue, and is rebuilt byte for byte from these parameters. It is the plan of a setup without a keyboard profile; the page then warns that chords swallowed by the keyboard will give false misses. A setup with a keyboard profile has its own plan in `docs/setups.js`: the same algorithm over the chords the profile does not block, so blocks stay full and balanced and the page skips nothing. After a calibration or after `trainer drill` with other parameters, rebuild `setups.js` with `trainer setups`. The sampling is deliberately not uniform over chords: every block is balanced by the number of keys, then by the number of keys on the left hand, and inside a stratum chords come from a shuffled deck, so one-handed chords with many keys are measured too (small strata repeat often by design). No chord repeats in a row. `index.html?block=N` replays block `N`; otherwise a block is random.
 
-A block log has the format `steno-zero/drill-log`, version 1: session `drill-<block>-<start>`, seed, block, `max_keys`, the keyboard (`name`, `sha256`, or `null`), start and finish, user agent, the largest number of keys held and one record `i, target, typed, shown_ms, down_ms, up_ms` per chord (`performance.now()` times; `shown_ms` is taken when the scheme is already in the page).
+A block log has the format `steno-zero/drill-log`, version 2: session `drill-<block>-<start>`, seed, block, `max_keys`, the layout, the keyboard (`name`, `sha256`, or `null`), start and finish, user agent, the largest number of keys held and one record `i, target, typed, shown_ms, down_ms, up_ms` per chord (`i` is the index in the plan of the setup, `keyboard` and `seed` tell which plan) (`performance.now()` times; `shown_ms` is taken when the scheme is already in the page).
+
+The hands light the target live in this mode too, so the times and the misses of random chords and of calibration were taken with that feedback: a corrected chord is a hit, and its time includes the correction. The exam shows no goal and is not affected. Whether the live highlight slows the pace (eyes go to the hands instead of the label) is to be noted from the first live blocks.
+
+Old version 1 files (right thumb on `KeyN`, keys named by letters) are not read: `trainer-log` version 2, `drill-log` version 2, keyboard profile version 2 and calibration version 2 all carry the layout or physical codes. The one random-chord block taken that way was a trial.
 
 ## Chord prices
 
 ```
-uv run steno-zero price fit runs/drill/*.json --keyboard data/keyboards/laptop.json --out runs/price
+uv run steno-zero price fit runs/drill/*.json --keyboard data/keyboards/laptop-vm.json --out runs/price
+uv run steno-zero price fit runs/drill/*.json --layout qwerty-vm --out runs/price   # only the logs of one layout
 ```
 
-`price fit` reads the logs of random chords into a pandas table (one row per presentation, the first 5 of each session dropped as warm-up) and writes `prices.json` and `report.json`. Features of a chord (19): the number of keys, keys per hand, both hands, one flag per key, both index keys of a hand, adjacent pressed keys, the finger span and the finger holes per hand, and a mirrored left/right shape. The target is `total` (release minus display) or `motor` (release minus first press); a miss is not a time, and slower rows than `--max-ms` are dropped.
+`price fit` reads the logs of random chords into a pandas table (one row per presentation, the first 5 of each session dropped as warm-up) and writes `prices.json` and `report.json`. Features of a chord (19): `fingers` (how many), fingers per hand, both hands, one flag per finger (`L4` .. `R4`), `thumb_index` (the pairs `L1 L0` and `R0 R1`), adjacent pressed fingers, the span and the holes per hand, and a mirrored left/right shape. The thumb is its own finger here (the old table put the thumbs with the index fingers). The target is `total` (release minus display) or `motor` (release minus first press); a miss is not a time, and slower rows than `--max-ms` are dropped.
 
-The baseline (the mean time by the number of keys), Ridge and gradient boosting are compared by 5-fold `GroupKFold` **by chord**, so every score is for chords the model has not seen. Metrics: MAE, R2 and the mean per-chord error. The miss probability is compared in the same way (a smoothed rate by the number of keys against logistic regression, log loss and Brier score). `auto` picks the model with the smallest MAE. `prices.json` lists **all** chords allowed by `--max-keys`; the chords unavailable on the keyboard profile have `available: false` and `null` time and miss probability. `report.json` also has the Ridge coefficients, per-session medians (drift) and `suspect_chords`: chords whose presentations all missed, each time with a strict subset of the keys, which may be a key the keyboard swallows and is not in the profile.
+The baseline (the mean time by the number of keys), Ridge and gradient boosting are compared by 5-fold `GroupKFold` **by chord**, so every score is for chords the model has not seen. Metrics: MAE, R2 and the mean per-chord error. The miss probability is compared in the same way (a smoothed rate by the number of keys against logistic regression, log loss and Brier score). `auto` picks the model with the smallest MAE. `prices.json` gives a time and a miss probability for **all** chords allowed by `--max-keys`: availability on a keyboard is a property of a setup, not of fingers, and the estimate for chords not seen is exactly what `GroupKFold` checks. `report.json` also has the Ridge coefficients, per-session medians (drift) and `suspect_chords`: chords whose presentations all missed, each time with a strict subset of the keys, which may be a key the keyboard swallows and is not in the profile.
 
-Logs taken on different profiles (or some with and some without) are never mixed, and the profile given to `--keyboard` must be the one recorded in the logs. The human slip and a swallowed key cannot be told apart from a log alone, which is why the profile exists. On synthetic data with a known dependence Ridge recovers it and beats the baseline several times over (the tests check it); **there are no numbers from live measurements yet**, and the prices are not connected to the evolution. The time of a random chord includes recognising the scheme, which fluent typing does not have, so it is not yet an absolute price.
+Logs of different layouts are read together, because the model is about fingers and a layout only imitates the hand; if there is more than one layout `price fit` prints `warning: mixing drill logs of N layouts: NAME (K sessions), ...` to stderr and `report.json` has the split `layouts`. `--layout NAME` keeps the logs of one layout. Two layouts with one name and different codes are an error. Logs taken on different profiles (or some with and some without) are never mixed, and the profile given to `--keyboard` must be the one recorded in the logs. The human slip and a swallowed key cannot be told apart from a log alone, which is why the profile exists. On synthetic data with a known dependence Ridge recovers it and beats the baseline several times over (the tests check it); **there are no numbers from live measurements yet**, and the prices are not connected to the evolution. The time of a random chord includes recognising the scheme, which fluent typing does not have, so it is not yet an absolute price.
 
 ## Not supported
 
@@ -168,6 +190,7 @@ Logs taken on different profiles (or some with and some without) are never mixed
 - Chord prices that depend on the previous chord, slips of more than one key, per-finger slip rates, measured slip rates, measured prices (the `price fit` model exists, but there are no live measurements and nothing feeds them to the evolution), calibration of drill times to fluent typing.
 - Memory penalty stages beyond a per-entry cost with a rarity surcharge.
 - Free typing with backspace in the trainer, an estimate of `confusion_s` and measurements in the home mode.
+- Merging calibrations of different key sets into one keyboard profile, and a layout feature in the price model (one or two layouts over dozens of chords would only overfit).
 - Key-blocking check beyond pairs and triples, and an evolution that avoids chords blocked by a keyboard profile.
 - Capital letters, digits, quotes, brackets, Latin letters and line breaks: normalisation drops them.
 

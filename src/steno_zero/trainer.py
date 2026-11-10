@@ -10,29 +10,17 @@ from pathlib import Path
 from typing import IO, Any
 
 from steno_zero.alphabet import ALPHABET, normalize
-from steno_zero.chords import N_CHORDS, N_KEYS, chord_costs, chord_keys, neighbours
+from steno_zero.chords import FINGERS, N_CHORDS, N_KEYS, chord_costs, chord_keys, neighbours
 from steno_zero.corpus import split_corpus
+from steno_zero.layout import Layout, LayoutError, layout_from_obj
 from steno_zero.params import CostParams
 from steno_zero.simulate import segment
 from steno_zero.table import Table
 
-KEY_CODES: tuple[str, ...] = (
-    "KeyA",
-    "KeyS",
-    "KeyD",
-    "KeyF",
-    "KeyV",
-    "KeyN",
-    "KeyJ",
-    "KeyK",
-    "KeyL",
-    "Semicolon",
-)
-KEY_LABELS: tuple[str, ...] = ("a", "s", "d", "f", "v", "n", "j", "k", "l", ";")
 HELP_KEY: str = "Slash"
 DATA_FORMAT: str = "steno-zero/trainer-data"
 LOG_FORMAT: str = "steno-zero/trainer-log"
-VERSION: int = 1
+VERSION: int = 2
 DATA_PREFIX: str = "window.STENO_ZERO_DATA = "
 DATA_SUFFIX: str = ";\n"
 PHRASE_MIN_LEN: int = 10
@@ -46,7 +34,7 @@ class TrainerLogError(ValueError): ...
 
 
 def chord_label(chord: int) -> str:
-    return " ".join(KEY_LABELS[i] for i in chord_keys(chord))
+    return " ".join(FINGERS[i] for i in chord_keys(chord))
 
 
 def help_order(table: Table) -> list[tuple[str, int]]:
@@ -135,7 +123,7 @@ def trainer_data(
     return {
         "format": DATA_FORMAT,
         "version": VERSION,
-        "keys": [{"code": c, "label": lbl} for c, lbl in zip(KEY_CODES, KEY_LABELS, strict=True)],
+        "fingers": list(FINGERS),
         "help_key": HELP_KEY,
         "exam_size": exam_size,
         "phrases": list(phrases),
@@ -167,8 +155,10 @@ def read_data_js(path: Path) -> dict[str, Any]:
         obj: Any = json.loads(text[len(DATA_PREFIX) : len(text) - len(DATA_SUFFIX)])
     except ValueError as exc:
         raise ValueError(f"bad data.js JSON: {exc}") from exc
+    if isinstance(obj, dict) and obj.get("format") == DATA_FORMAT and obj.get("version") == 1:
+        raise ValueError("trainer data version 1 is no longer read")
     if not isinstance(obj, dict) or obj.get("format") != DATA_FORMAT or obj.get("version") != VERSION:
-        raise ValueError("not a steno-zero trainer data, version 1")
+        raise ValueError(f"not a steno-zero trainer data, version {VERSION}")
     return obj
 
 
@@ -190,6 +180,7 @@ class TrainerLog:
     started: str
     finished: str
     user_agent: str
+    layout: Layout
     max_held: int
     phrases: tuple[int, ...]
     chars: int
@@ -239,8 +230,10 @@ def read_trainer_log(text: str) -> TrainerLog:
         raise TrainerLogError(f"bad JSON: {exc}") from exc
     if not isinstance(obj, dict):
         raise TrainerLogError("log must be an object")
+    if obj.get("format") == LOG_FORMAT and obj.get("version") == 1:
+        raise TrainerLogError("trainer log version 1 is no longer read")
     if obj.get("format") != LOG_FORMAT or obj.get("version") != VERSION:
-        raise TrainerLogError("not a steno-zero trainer log, version 1")
+        raise TrainerLogError(f"not a steno-zero trainer log, version {VERSION}")
     strings: dict[str, str] = {}
     key: str
     for key in ("session", "table", "table_sha256", "started", "finished", "user_agent"):
@@ -250,6 +243,10 @@ def read_trainer_log(text: str) -> TrainerLog:
         strings[key] = value
     if strings["session"] == "":
         raise TrainerLogError("session must not be empty")
+    try:
+        layout: Layout = layout_from_obj(obj.get("layout"))
+    except LayoutError as exc:
+        raise TrainerLogError(f"layout: {exc}") from exc
     max_held: int = _int(obj.get("max_held"), "max_held", 0, N_KEYS)
     chars: int = _int(obj.get("chars"), "chars", 1, None)
     raw_phrases: Any = obj.get("phrases")
@@ -277,6 +274,7 @@ def read_trainer_log(text: str) -> TrainerLog:
         started=strings["started"],
         finished=strings["finished"],
         user_agent=strings["user_agent"],
+        layout=layout,
         max_held=max_held,
         phrases=phrases,
         chars=chars,

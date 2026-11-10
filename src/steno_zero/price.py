@@ -12,28 +12,20 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import brier_score_loss, log_loss, mean_absolute_error, r2_score
 from sklearn.model_selection import GroupKFold
 
-from steno_zero.chords import N_CHORDS, N_KEYS, allowed_chords, check_max_keys
+from steno_zero.chords import FINGERS, N_CHORDS, N_KEYS, allowed_chords, check_max_keys, chord_keys
 from steno_zero.drill import DrillLog, Presentation
-from steno_zero.keyboard import KeyboardProfile, available_chords, is_available, profile_sha256
+from steno_zero.keyboard import KeyboardProfile, finger_blocked, is_available, profile_sha256
+from steno_zero.layout import Layout
 from steno_zero.trainer import chord_label
 
-FINGER: tuple[int, ...] = (0, 1, 2, 3, 3, 3, 3, 2, 1, 0)
+FINGER: tuple[int, ...] = (0, 1, 2, 3, 4, 4, 3, 2, 1, 0)
 FEATURE_NAMES: tuple[str, ...] = (
-    "keys",
+    "fingers",
     "left",
     "right",
     "both_hands",
-    "key_0",
-    "key_1",
-    "key_2",
-    "key_3",
-    "key_4",
-    "key_5",
-    "key_6",
-    "key_7",
-    "key_8",
-    "key_9",
-    "index_pairs",
+    *FINGERS,
+    "thumb_index",
     "adjacent",
     "span",
     "holes",
@@ -45,7 +37,7 @@ MISS_MODELS: tuple[str, ...] = ("baseline", "logistic")
 MIN_MISSES: int = 30
 PRICES_FORMAT: str = "steno-zero/chord-prices"
 REPORT_FORMAT: str = "steno-zero/chord-price-report"
-PRICE_VERSION: int = 1
+PRICE_VERSION: int = 2
 SKIP_FIRST: int = 5
 MAX_MS: float = 5000.0
 FOLDS: int = 5
@@ -63,7 +55,7 @@ type Predictor = Callable[[Floats, Floats, Floats], Floats]  # train X, train y,
 
 HANDS: tuple[range, range] = (range(0, 5), range(5, 10))
 ADJACENT: tuple[tuple[int, int], ...] = ((0, 1), (1, 2), (2, 3), (3, 4), (5, 6), (6, 7), (7, 8), (8, 9))
-INDEX_PAIRS: tuple[tuple[int, int], ...] = ((3, 4), (5, 6))
+THUMB_INDEX: tuple[tuple[int, int], ...] = ((3, 4), (5, 6))
 
 
 def chord_features(chord: int) -> dict[str, int]:
@@ -82,15 +74,15 @@ def chord_features(chord: int) -> dict[str, int]:
     left_keys: set[int] = {k for k in HANDS[0] if pressed[k]}
     right_keys: set[int] = {k for k in HANDS[1] if pressed[k]}
     values: dict[str, int] = {
-        "keys": chord.bit_count(),
+        "fingers": chord.bit_count(),
         "left": counts[0],
         "right": counts[1],
         "both_hands": int(counts[0] > 0 and counts[1] > 0),
     }
     k: int
     for k in range(N_KEYS):
-        values[f"key_{k}"] = int(pressed[k])
-    values["index_pairs"] = sum(pressed[a] and pressed[b] for a, b in INDEX_PAIRS)
+        values[FINGERS[k]] = int(pressed[k])
+    values["thumb_index"] = sum(pressed[a] and pressed[b] for a, b in THUMB_INDEX)
     values["adjacent"] = sum(pressed[a] and pressed[b] for a, b in ADJACENT)
     values["span"] = span
     values["holes"] = holes
@@ -122,8 +114,20 @@ def logs_keyboard(logs: Sequence[DrillLog]) -> tuple[str, str] | None:
     return logs[0].keyboard
 
 
+def logs_layouts(logs: Sequence[DrillLog]) -> dict[str, Layout]:
+    found: dict[str, Layout] = {}
+    log: DrillLog
+    for log in logs:
+        known: Layout | None = found.get(log.layout.name)
+        if known is not None and known.codes != log.layout.codes:
+            raise ValueError(f"layout {log.layout.name} has different key codes in different logs")
+        found.setdefault(log.layout.name, log.layout)
+    return {name: found[name] for name in sorted(found)}
+
+
 def presentations_frame(logs: Sequence[DrillLog], skip_first: int) -> pd.DataFrame:
     keyboard: Keyboard = logs_keyboard(logs)
+    layouts: dict[str, Layout] = logs_layouts(logs)
     if skip_first < 0:
         raise ValueError("skip_first must not be negative")
     names: list[str] = [log.session for log in logs]
@@ -139,6 +143,7 @@ def presentations_frame(logs: Sequence[DrillLog], skip_first: int) -> pd.DataFra
                     log.session,
                     log.block,
                     log.started,
+                    log.layout.name,
                     p.i,
                     p.target,
                     p.typed,
@@ -158,6 +163,7 @@ def presentations_frame(logs: Sequence[DrillLog], skip_first: int) -> pd.DataFra
             "session",
             "block",
             "started",
+            "layout",
             "i",
             "target",
             "typed",
@@ -172,6 +178,7 @@ def presentations_frame(logs: Sequence[DrillLog], skip_first: int) -> pd.DataFra
     features: pd.DataFrame = features_frame([int(t) for t in base["target"]]).reset_index(drop=True)
     frame: pd.DataFrame = pd.concat([base, features], axis=1)
     frame.attrs["keyboard"] = keyboard
+    frame.attrs["layouts"] = layouts
     return frame
 
 
@@ -254,24 +261,59 @@ def _check_profile(frame: pd.DataFrame, profile: KeyboardProfile | None) -> Keyb
             f"the logs were taken on the keyboard profile {_keyboard_text(keyboard)}, "
             f"but the given profile is {_keyboard_text((profile.name, profile_sha256(profile)))}"
         )
-    chord: int
-    for chord in sorted({int(t) for t in frame["target"]}):
-        if not is_available(chord, profile):
-            raise ValueError(f"target {chord} ({chord_label(chord)}) is blocked on the keyboard profile")
+    layouts: dict[str, Layout] = frame.attrs["layouts"]
+    name: str
+    layout: Layout
+    for name, layout in layouts.items():
+        blocked: tuple[int, ...] = finger_blocked(profile, layout)
+        chord: int
+        for chord in sorted({int(t) for t in frame.loc[frame["layout"] == name, "target"]}):
+            if not is_available(chord, blocked):
+                raise ValueError(
+                    f"target {chord} ({chord_label(chord)}) is blocked on the keyboard profile "
+                    f"in the layout {name}"
+                )
     return keyboard
 
 
 def _suspects(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    typed_by: dict[int, list[int]] = {}
+    layouts: dict[str, Layout] = frame.attrs["layouts"]
+    typed_by: dict[tuple[str, int], list[int]] = {}
+    name: str
     chord: int
     typed: int
-    for chord, typed in zip(frame["target"].tolist(), frame["typed"].tolist(), strict=True):
-        typed_by.setdefault(chord, []).append(typed)
+    for name, chord, typed in zip(
+        frame["layout"].tolist(), frame["target"].tolist(), frame["typed"].tolist(), strict=True
+    ):
+        typed_by.setdefault((name, chord), []).append(typed)
     return [
-        {"chord": chord, "label": chord_label(chord), "presentations": len(group)}
-        for chord, group in sorted(typed_by.items())
+        {
+            "chord": chord,
+            "label": chord_label(chord),
+            "layout": name,
+            "keys": [layouts[name].codes[i] for i in chord_keys(chord)],
+            "presentations": len(group),
+        }
+        for (name, chord), group in sorted(typed_by.items())
         if len(group) >= 2 and all(t != chord and t & chord == t for t in group)
     ]
+
+
+def _layouts_report(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    layouts: dict[str, Layout] = frame.attrs["layouts"]
+    out: list[dict[str, Any]] = []
+    name: str
+    for name in layouts:
+        rows: pd.DataFrame = frame[frame["layout"] == name]
+        out.append(
+            {
+                "name": name,
+                "keys": list(layouts[name].codes),
+                "sessions": int(rows["session"].nunique()),
+                "presentations": len(rows),
+            }
+        )
+    return out
 
 
 def _sessions(frame: pd.DataFrame, column: str, max_ms: float) -> list[dict[str, Any]]:
@@ -349,9 +391,8 @@ def fit_prices(
     chosen: str = min(TIME_MODELS, key=lambda m: time_report[m]["mae_ms"]) if model == "auto" else model
 
     all_chords: tuple[int, ...] = allowed_chords(max_keys)
-    usable: tuple[int, ...] = available_chords(max_keys, profile)
-    x_usable: Floats = features_frame(usable).to_numpy(dtype=np.float64)
-    time_pred: Floats = predictors[chosen](x_time, y_time, x_usable)
+    x_all: Floats = features_frame(all_chords).to_numpy(dtype=np.float64)
+    time_pred: Floats = predictors[chosen](x_time, y_time, x_all)
 
     y_miss: Floats = miss.astype(np.float64)
     miss_report: dict[str, Any] | None = None
@@ -372,24 +413,22 @@ def fit_prices(
             else "baseline"
         )
         miss_report["chosen"] = miss_model
-        miss_pred: Floats = miss_predictors[miss_model](features, y_miss, x_usable)
+        miss_pred: Floats = miss_predictors[miss_model](features, y_miss, x_all)
     else:
-        miss_pred = _baseline_miss(features, y_miss, x_usable)
+        miss_pred = _baseline_miss(features, y_miss, x_all)
 
-    time_of: dict[int, float] = {c: float(t) for c, t in zip(usable, time_pred, strict=True)}
-    miss_of: dict[int, float] = {c: float(p) for c, p in zip(usable, miss_pred, strict=True)}
+    time_of: dict[int, float] = {c: float(t) for c, t in zip(all_chords, time_pred, strict=True)}
+    miss_of: dict[int, float] = {c: float(p) for c, p in zip(all_chords, miss_pred, strict=True)}
     rows: list[dict[str, Any]] = []
     chord: int
     for chord in all_chords:
-        ok: bool = chord in time_of
         rows.append(
             {
                 "chord": chord,
                 "label": chord_label(chord),
-                "keys": chord.bit_count(),
-                "available": ok,
-                "time_ms": round(time_of[chord], 1) if ok else None,
-                "miss_prob": round(miss_of[chord], 6) if ok else None,
+                "fingers": chord.bit_count(),
+                "time_ms": round(time_of[chord], 1),
+                "miss_prob": round(miss_of[chord], 6),
             }
         )
     sessions: list[dict[str, Any]] = _sessions(frame, column, max_ms)
@@ -410,8 +449,7 @@ def fit_prices(
         "max_keys": max_keys,
         "seed": seed,
         "keyboard": keyboard_obj,
-        "available": len(usable),
-        "unavailable": len(all_chords) - len(usable),
+        "layouts": list(frame.attrs["layouts"]),
         "sessions": [s["session"] for s in sessions],
         "prices": rows,
     }
@@ -424,6 +462,7 @@ def fit_prices(
         "folds": folds,
         "max_ms": float(max_ms),
         "keyboard": keyboard_obj,
+        "layouts": _layouts_report(frame),
         "rows": len(frame),
         "time_rows": len(y_time),
         "misses": n_miss,

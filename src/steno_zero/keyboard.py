@@ -1,22 +1,22 @@
-"""Keyboard calibration log and keyboard profile: which chords the keyboard swallows."""
+"""Keyboard calibration log and keyboard profile: which key combinations the keyboard swallows."""
 
 import hashlib
 import itertools
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from steno_zero.chords import N_CHORDS, N_KEYS, allowed_chords
-from steno_zero.trainer import chord_label
+from steno_zero.chords import FINGERS, N_CHORDS, N_KEYS, allowed_chords, chord_keys
+from steno_zero.layout import CODE_PATTERN, NAME_PATTERN, Layout, LayoutError, layout_from_obj
 
 CALIBRATION_FORMAT: str = "steno-zero/keyboard-calibration"
 PROFILE_FORMAT: str = "steno-zero/keyboard-profile"
-KEYBOARD_VERSION: int = 1
+KEYBOARD_VERSION: int = 2
 CALIBRATION_ATTEMPTS: int = 3
 KEYBOARDS_DIR: Path = Path("data/keyboards")
-NAME_PATTERN: str = "[a-z0-9-]+"
 
 
 class KeyboardError(ValueError): ...
@@ -45,12 +45,13 @@ class CalibrationLog:
     finished: str
     user_agent: str
     max_held: int
+    layout: Layout
     attempts: tuple[CalibrationAttempt, ...]
 
 
 @dataclass(frozen=True)
 class Blocked:
-    chord: int
+    keys: tuple[str, ...]
     unclear: bool
 
 
@@ -59,6 +60,7 @@ class KeyboardProfile:
     name: str
     session: str
     created: str
+    keys: tuple[str, ...]
     blocked: tuple[Blocked, ...]
 
 
@@ -83,7 +85,11 @@ def _load(text: str, fmt: str) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise KeyboardError("must be a JSON object")
     version: Any = obj.get("version")
-    if obj.get("format") != fmt or isinstance(version, bool) or version != KEYBOARD_VERSION:
+    if obj.get("format") != fmt:
+        raise KeyboardError(f"not a {fmt} file, version {KEYBOARD_VERSION}")
+    if version == 1 and not isinstance(version, bool):
+        raise KeyboardError(f"{fmt} version 1 is no longer read")
+    if isinstance(version, bool) or version != KEYBOARD_VERSION:
         raise KeyboardError(f"not a {fmt} file, version {KEYBOARD_VERSION}")
     return obj
 
@@ -119,18 +125,32 @@ def read_calibration_log(text: str) -> CalibrationLog:
     finished: str = _string(obj, "finished")
     user_agent: str = _string(obj, "user_agent")
     max_held: int = _int(obj.get("max_held"), "max_held", 0, N_KEYS)
+    try:
+        layout: Layout = layout_from_obj(obj.get("layout"))
+    except LayoutError as exc:
+        raise KeyboardError(f"layout: {exc}") from exc
     raw_attempts: Any = obj.get("attempts")
     if not isinstance(raw_attempts, list) or not raw_attempts:
         raise KeyboardError("attempts must be a non-empty list")
     allowed: frozenset[int] = frozenset(calibration_chords())
     return CalibrationLog(
-        session, started, finished, user_agent, max_held, tuple(_attempt(a, allowed) for a in raw_attempts)
+        session,
+        started,
+        finished,
+        user_agent,
+        max_held,
+        layout,
+        tuple(_attempt(a, allowed) for a in raw_attempts),
     )
 
 
 def _check_name(name: str) -> None:
     if re.fullmatch(NAME_PATTERN, name) is None:
         raise KeyboardError(f"name must match {NAME_PATTERN}: {name!r}")
+
+
+def _chord_text(chord: int) -> str:
+    return " ".join(FINGERS[i] for i in chord_keys(chord))
 
 
 def build_profile(log: CalibrationLog, name: str) -> KeyboardProfile:
@@ -151,14 +171,15 @@ def build_profile(log: CalibrationLog, name: str) -> KeyboardProfile:
             continue
         blocked[chord] = any(t & chord != t for t in typed)
     if missing:
-        listed: str = ", ".join(chord_label(c) for c in missing)
+        listed: str = ", ".join(_chord_text(c) for c in missing)
         raise KeyboardError(f"calibration incomplete: {listed}")
     minimal: list[Blocked] = [
-        Blocked(c, unclear)
-        for c, unclear in sorted(blocked.items())
+        Blocked(tuple(sorted(log.layout.codes[i] for i in chord_keys(c))), unclear)
+        for c, unclear in blocked.items()
         if not any(b != c and c & b == b for b in blocked)
     ]
-    return KeyboardProfile(name, log.session, log.started, tuple(minimal))
+    minimal.sort(key=lambda b: (len(b.keys), b.keys))
+    return KeyboardProfile(name, log.session, log.started, tuple(sorted(log.layout.codes)), tuple(minimal))
 
 
 def profile_json(profile: KeyboardProfile) -> str:
@@ -168,11 +189,22 @@ def profile_json(profile: KeyboardProfile) -> str:
         "name": profile.name,
         "session": profile.session,
         "created": profile.created,
-        "blocked": [
-            {"chord": b.chord, "label": chord_label(b.chord), "unclear": b.unclear} for b in profile.blocked
-        ],
+        "keys": list(profile.keys),
+        "blocked": [{"keys": list(b.keys), "unclear": b.unclear} for b in profile.blocked],
     }
     return json.dumps(obj, ensure_ascii=False, indent=1) + "\n"
+
+
+def _codes(raw: object, what: str, minimum: int) -> tuple[str, ...]:
+    if not isinstance(raw, list) or len(raw) < minimum:
+        raise KeyboardError(f"{what} must be a list of at least {minimum} key codes")
+    code: Any
+    for code in raw:
+        if not isinstance(code, str) or re.fullmatch(CODE_PATTERN, code) is None:
+            raise KeyboardError(f"{what}: bad key code {code!r}")
+    if any(a >= b for a, b in itertools.pairwise(raw)):
+        raise KeyboardError(f"{what} must be strictly ascending")
+    return tuple(raw)
 
 
 def read_profile(text: str) -> KeyboardProfile:
@@ -181,42 +213,61 @@ def read_profile(text: str) -> KeyboardProfile:
     _check_name(name)
     session: str = _string(obj, "session")
     created: str = _string(obj, "created")
+    keys: tuple[str, ...] = _codes(obj.get("keys"), "keys", 2)
     raw_blocked: Any = obj.get("blocked")
     if not isinstance(raw_blocked, list):
         raise KeyboardError("blocked must be a list")
     blocked: list[Blocked] = []
     raw: Any
     for raw in raw_blocked:
-        if not isinstance(raw, dict) or not all(k in raw for k in ("chord", "label", "unclear")):
-            raise KeyboardError("blocked item needs chord, label and unclear")
-        chord: int = _int(raw["chord"], "chord", 1, N_CHORDS)
-        if chord.bit_count() < 2:
-            raise KeyboardError(f"blocked chord must have at least 2 keys: {chord}")
-        if raw["label"] != chord_label(chord):
-            raise KeyboardError(f"wrong label for chord {chord}: {raw['label']!r}")
+        if not isinstance(raw, dict) or not all(k in raw for k in ("keys", "unclear")):
+            raise KeyboardError("blocked item needs keys and unclear")
+        combo: tuple[str, ...] = _codes(raw["keys"], "blocked keys", 2)
+        outside: list[str] = [k for k in combo if k not in keys]
+        if outside:
+            raise KeyboardError(f"blocked keys are not in keys: {', '.join(outside)}")
         if not isinstance(raw["unclear"], bool):
             raise KeyboardError("unclear must be a bool")
-        if blocked and chord <= blocked[-1].chord:
-            raise KeyboardError("blocked must be strictly ascending")
-        blocked.append(Blocked(chord, raw["unclear"]))
+        item: Blocked = Blocked(combo, raw["unclear"])
+        if blocked and (len(item.keys), item.keys) <= (len(blocked[-1].keys), blocked[-1].keys):
+            raise KeyboardError("blocked must be strictly ascending by (length, keys)")
+        blocked.append(item)
     a: Blocked
     for a in blocked:
-        if any(b is not a and a.chord & b.chord == b.chord for b in blocked):
-            raise KeyboardError(f"blocked chord {a.chord} contains another blocked chord")
-    return KeyboardProfile(name, session, created, tuple(blocked))
+        if any(b is not a and set(b.keys) <= set(a.keys) for b in blocked):
+            raise KeyboardError(f"blocked {keys_label(a.keys)} contains another blocked combination")
+    return KeyboardProfile(name, session, created, keys, tuple(blocked))
 
 
 def profile_sha256(profile: KeyboardProfile) -> str:
     return hashlib.sha256(profile_json(profile).encode("utf-8")).hexdigest()
 
 
-def is_available(chord: int, profile: KeyboardProfile | None) -> bool:
+def finger_blocked(profile: KeyboardProfile, layout: Layout) -> tuple[int, ...]:
+    uncovered: list[str] = [c for c in layout.codes if c not in profile.keys]
+    if uncovered:
+        raise KeyboardError(
+            f"profile {profile.name} does not cover layout {layout.name}; not calibrated: "
+            + ", ".join(uncovered)
+        )
+    return tuple(
+        sorted(
+            sum(1 << layout.codes.index(k) for k in b.keys)
+            for b in profile.blocked
+            if all(k in layout.codes for k in b.keys)
+        )
+    )
+
+
+def is_available(chord: int, blocked: Sequence[int]) -> bool:
     if not 1 <= chord <= N_CHORDS:
         raise ValueError(f"chord out of range 1..{N_CHORDS}: {chord}")
-    if profile is None:
-        return True
-    return not any(chord & b.chord == b.chord for b in profile.blocked)
+    return not any(chord & b == b for b in blocked)
 
 
-def available_chords(max_keys: int, profile: KeyboardProfile | None) -> tuple[int, ...]:
-    return tuple(c for c in allowed_chords(max_keys) if is_available(c, profile))
+def available_chords(max_keys: int, blocked: Sequence[int]) -> tuple[int, ...]:
+    return tuple(c for c in allowed_chords(max_keys) if is_available(c, blocked))
+
+
+def keys_label(keys: Sequence[str]) -> str:
+    return "+".join(keys)
