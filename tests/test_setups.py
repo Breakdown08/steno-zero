@@ -247,6 +247,6 @@ def test_committed_setups_js(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert path.read_bytes() == out.read_bytes()
     data: dict[str, Any] = read_setups_js(path)
     names: list[str] = [s["name"] for s in data["setups"]]
-    assert names[0] == "qwerty-vm"
+    assert data["setups"][0]["layout"]["name"] == "qwerty-vm"
     assert not any("laptop-vn" in n for n in names)
     assert subprocess.run(["git", "check-ignore", "-q", "docs/setups.js"], cwd=ROOT).returncode == 1
