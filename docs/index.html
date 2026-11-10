@@ -22,7 +22,7 @@
   #entries { columns: 4; font-family: monospace; font-size: 0.9em; }
   #result { border: 2px solid #4a8; border-radius: 4px; padding: 0.5em 1em; margin: 1em 0; }
   #target { margin: 0.6em 0; display: flex; gap: 2em; align-items: center; flex-wrap: wrap; }
-  #hands { display: block; width: 100%; max-width: 40em; height: auto; margin: 0.6em auto; }
+  #hands { display: block; width: 100%; max-width: 45em; height: auto; margin: 0.6em auto; }
   #hands .palm { fill: #f3ece4; stroke: #b9a99a; stroke-width: 1.5; }
   .finger .tip { fill: #fafafa; stroke: #888; stroke-width: 1.5; }
   .finger .name { font: bold 12px monospace; text-anchor: middle; fill: #333; pointer-events: none; }
@@ -57,64 +57,64 @@
   <span id="target-label"></span>
   <span id="target-note"></span>
 </div>
-<svg id="hands" viewBox="0 0 640 230" role="img" aria-label="Две кисти: подсвечены пальцы аккорда">
-  <path class="palm" d="M 40 90 L 300 130 C 330 190 300 215 240 220 L 110 220 C 60 200 40 140 40 90 Z"></path>
-  <path class="palm" d="M 600 90 L 340 130 C 310 190 340 215 400 220 L 530 220 C 580 200 600 140 600 90 Z"></path>
-  <g class="finger" data-finger="0">
+<svg id="hands" viewBox="-40 0 720 230" role="img" aria-label="Две кисти: подсвечены пальцы аккорда">
+  <path class="palm" transform="translate(-40 0)" d="M 40 90 L 300 130 C 330 190 300 215 240 220 L 110 220 C 60 200 40 140 40 90 Z"></path>
+  <path class="palm" transform="translate(40 0)" d="M 600 90 L 340 130 C 310 190 340 215 400 220 L 530 220 C 580 200 600 140 600 90 Z"></path>
+  <g class="finger" data-finger="0" transform="translate(-40 0)">
     <ellipse class="tip" data-finger="0" cx="70" cy="80" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 58 66 L 82 94 M 82 66 L 58 94"></path>
     <text class="name" x="70" y="77">L4</text>
     <text class="key" x="70" y="94"></text>
   </g>
-  <g class="finger" data-finger="1">
+  <g class="finger" data-finger="1" transform="translate(-40 0)">
     <ellipse class="tip" data-finger="1" cx="125" cy="50" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 113 36 L 137 64 M 137 36 L 113 64"></path>
     <text class="name" x="125" y="47">L3</text>
     <text class="key" x="125" y="64"></text>
   </g>
-  <g class="finger" data-finger="2">
+  <g class="finger" data-finger="2" transform="translate(-40 0)">
     <ellipse class="tip" data-finger="2" cx="175" cy="35" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 163 21 L 187 49 M 187 21 L 163 49"></path>
     <text class="name" x="175" y="32">L2</text>
     <text class="key" x="175" y="49"></text>
   </g>
-  <g class="finger" data-finger="3">
+  <g class="finger" data-finger="3" transform="translate(-40 0)">
     <ellipse class="tip" data-finger="3" cx="225" cy="50" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 213 36 L 237 64 M 237 36 L 213 64"></path>
     <text class="name" x="225" y="47">L1</text>
     <text class="key" x="225" y="64"></text>
   </g>
-  <g class="finger" data-finger="4">
+  <g class="finger" data-finger="4" transform="translate(-40 0)">
     <ellipse class="tip" data-finger="4" cx="285" cy="150" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 273 136 L 297 164 M 297 136 L 273 164"></path>
     <text class="name" x="285" y="147">L0</text>
     <text class="key" x="285" y="164"></text>
   </g>
-  <g class="finger" data-finger="5">
+  <g class="finger" data-finger="5" transform="translate(40 0)">
     <ellipse class="tip" data-finger="5" cx="355" cy="150" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 343 136 L 367 164 M 367 136 L 343 164"></path>
     <text class="name" x="355" y="147">R0</text>
     <text class="key" x="355" y="164"></text>
   </g>
-  <g class="finger" data-finger="6">
+  <g class="finger" data-finger="6" transform="translate(40 0)">
     <ellipse class="tip" data-finger="6" cx="415" cy="50" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 403 36 L 427 64 M 427 36 L 403 64"></path>
     <text class="name" x="415" y="47">R1</text>
     <text class="key" x="415" y="64"></text>
   </g>
-  <g class="finger" data-finger="7">
+  <g class="finger" data-finger="7" transform="translate(40 0)">
     <ellipse class="tip" data-finger="7" cx="465" cy="35" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 453 21 L 477 49 M 477 21 L 453 49"></path>
     <text class="name" x="465" y="32">R2</text>
     <text class="key" x="465" y="49"></text>
   </g>
-  <g class="finger" data-finger="8">
+  <g class="finger" data-finger="8" transform="translate(40 0)">
     <ellipse class="tip" data-finger="8" cx="515" cy="50" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 503 36 L 527 64 M 527 36 L 503 64"></path>
     <text class="name" x="515" y="47">R3</text>
     <text class="key" x="515" y="64"></text>
   </g>
-  <g class="finger" data-finger="9">
+  <g class="finger" data-finger="9" transform="translate(40 0)">
     <ellipse class="tip" data-finger="9" cx="570" cy="80" rx="24" ry="28"></ellipse>
     <path class="cross" d="M 558 66 L 582 94 M 582 66 L 558 94"></path>
     <text class="name" x="570" y="77">R4</text>
