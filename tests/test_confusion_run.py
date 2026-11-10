@@ -171,7 +171,7 @@ def test_negative_confusion_s(tmp_path: Path) -> None:
 def test_read_log_versions(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [gen_row(0, 100.0, True), gen_row(1, 95.0, True)]
     v: int
-    for v in (1, 2, 3):
+    for v in (1, 2, 3, 4):
         log: Path = tmp_path / f"v{v}.jsonl"
         write_log(log, [run_row() | {"version": v}, *rows])
         run_: dict[str, Any]
@@ -179,8 +179,8 @@ def test_read_log_versions(tmp_path: Path) -> None:
         run_, gens = read_log(log)
         assert run_["version"] == v
         assert len(gens) == 2
-    bad: Path = tmp_path / "v4.jsonl"
-    write_log(bad, [run_row() | {"version": 4}, *rows])
+    bad: Path = tmp_path / "v5.jsonl"
+    write_log(bad, [run_row() | {"version": 5}, *rows])
     with pytest.raises(ValueError):
         read_log(bad)
     code: int

@@ -9,9 +9,11 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import IO, Any
 
 from steno_zero.chords import allowed_chords, check_max_keys, chord_costs
+from steno_zero.compare import RunStats, compare_runs, summarize
 from steno_zero.corpus import fetch_corpus, load_corpus, split_corpus
 from steno_zero.drill import (
     DRILL_BLOCKS,
@@ -30,6 +32,7 @@ from steno_zero.evolve import (
     EvolveParams,
     EvolveResult,
     GenerationRecord,
+    Screen,
     evolve,
     fitness_text,
 )
@@ -51,6 +54,7 @@ from steno_zero.plot import plot_log
 from steno_zero.rival import rival_table
 from steno_zero.setups import setups_data, write_setups_js
 from steno_zero.simulate import Score, evaluate
+from steno_zero.surrogate_data import DataParams, DataRow, data_lines, generate_data, read_data
 from steno_zero.table import Table
 from steno_zero.trainer import (
     EXAM_LIMIT,
@@ -69,6 +73,9 @@ from steno_zero.trainer import (
 
 DEFAULT_SOURCES: Path = Path("data/corpus/sources.json")
 DEFAULT_CORPUS: Path = Path("data/corpus/classics.txt")
+DEFAULT_SURROGATE_DIR: Path = Path("runs/surrogate")
+DEFAULT_OVERSAMPLE: int = 4
+NO_TORCH: str = "torch is not installed; run `uv sync --extra surrogate`"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -103,6 +110,8 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--generations", type=int, default=EvolveParams().generations)
     evo.add_argument("--sample-chars", type=int, default=SAMPLE_CHARS)
     evo.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    evo.add_argument("--surrogate", type=Path, default=None, metavar="MODEL")
+    evo.add_argument("--oversample", type=int, default=None)
     evo.add_argument("--out", type=Path, default=None)
 
     plot: argparse.ArgumentParser = sub.add_parser("plot", help="plot the record log")
@@ -135,6 +144,45 @@ def _build_parser() -> argparse.ArgumentParser:
     setups.add_argument("--keyboards", type=Path, default=KEYBOARDS_DIR)
     setups.add_argument("--drill", type=Path, default=Path("docs/drill.js"))
     setups.add_argument("--out", type=Path, default=Path("docs/setups.js"))
+
+    sur: argparse.ArgumentParser = sub.add_parser("surrogate", help="neural surrogate of the table score")
+    sur_sub: Any = sur.add_subparsers(dest="surrogate_command", required=True)
+    sdata: argparse.ArgumentParser = sur_sub.add_parser("data", help="write a training data set")
+    sdata.add_argument("--corpus", type=Path, default=None)
+    sdata.add_argument("--horizon", type=float, default=DEFAULT_HORIZON)
+    sdata.add_argument("--confusion-s", type=float, default=PenaltyParams().confusion_s)
+    sdata.add_argument("--max-keys", type=int, default=DEFAULT_MAX_KEYS)
+    sdata.add_argument("--sample-chars", type=int, default=SAMPLE_CHARS)
+    sdata.add_argument("--seed-base", type=int, default=DataParams().seed_base)
+    sdata.add_argument("--seeds", type=int, default=DataParams().seeds)
+    sdata.add_argument("--population", type=int, default=DataParams().population)
+    sdata.add_argument("--generations", type=int, default=DataParams().generations)
+    sdata.add_argument("--random", type=int, default=DataParams().random)
+    sdata.add_argument("--random-extra", type=int, default=DataParams().random_extra)
+    sdata.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    sdata.add_argument("--out", type=Path, default=DEFAULT_SURROGATE_DIR / "data.jsonl")
+    strain: argparse.ArgumentParser = sur_sub.add_parser("train", help="train the surrogate on CPU")
+    strain.add_argument("--data", type=Path, required=True)
+    strain.add_argument("--corpus", type=Path, default=None)
+    strain.add_argument("--seed", type=int, default=0)
+    strain.add_argument("--epochs", type=int, default=30)
+    strain.add_argument("--batch", type=int, default=256)
+    strain.add_argument("--lr", type=float, default=1e-3)
+    strain.add_argument("--hidden", type=int, default=64)
+    strain.add_argument("--holdout", type=int, default=1)
+    strain.add_argument("--out", type=Path, default=DEFAULT_SURROGATE_DIR / "model.pt")
+    scmp: argparse.ArgumentParser = sur_sub.add_parser(
+        "compare", help="evolution with and without the surrogate"
+    )
+    scmp.add_argument("--model", type=Path, required=True)
+    scmp.add_argument("--corpus", type=Path, default=None)
+    scmp.add_argument("--seed-base", type=int, default=0)
+    scmp.add_argument("--seeds", type=int, default=3)
+    scmp.add_argument("--population", type=int, default=EvolveParams().population)
+    scmp.add_argument("--generations", type=int, default=EvolveParams().generations)
+    scmp.add_argument("--oversample", type=int, default=DEFAULT_OVERSAMPLE)
+    scmp.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    scmp.add_argument("--out", type=Path, default=DEFAULT_SURROGATE_DIR / "compare.json")
 
     keyboard: argparse.ArgumentParser = sub.add_parser("keyboard", help="keyboard calibration")
     keyboard_sub: Any = keyboard.add_subparsers(dest="keyboard_command", required=True)
@@ -218,6 +266,14 @@ def _evolve_command(args: argparse.Namespace) -> int:
     )
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
+    if args.surrogate is None and args.oversample is not None:
+        raise ValueError("--oversample needs --surrogate")
+    oversample: int = DEFAULT_OVERSAMPLE if args.oversample is None else args.oversample
+    if args.surrogate is None:
+        oversample = 1
+    if oversample < 1:
+        raise ValueError("--oversample must be at least 1")
+    module: ModuleType | None = _surrogate_module() if args.surrogate is not None else None
     text: str = _read_text(args.corpus, "all")
     train: str
     test: str
@@ -227,6 +283,20 @@ def _evolve_command(args: argparse.Namespace) -> int:
     penalty: PenaltyParams = PenaltyParams(confusion_s=args.confusion_s)
     costs: tuple[int, ...] = chord_costs(cost_params)
     horizon: float = args.horizon
+    screen: Screen | None = None
+    model_sha: str = ""
+    if module is not None:
+        model: Any = module.load_surrogate(args.surrogate, fit)
+        module.check_compatible(
+            model.meta,
+            hashlib.sha256(fit.encode("utf-8")).hexdigest(),
+            horizon,
+            params.max_keys,
+            _json_like(dataclasses.asdict(cost_params)),
+            _json_like(dataclasses.asdict(penalty)),
+        )
+        model_sha = hashlib.sha256(args.surrogate.read_bytes()).hexdigest()
+        screen = model.predict
     rival: Table = rival_table(train, costs, params.max_keys)
     rival_total: float = evaluate(fit, rival, costs, penalty, horizon).total
     out: Path = args.out if args.out is not None else Path("runs") / f"seed-{args.seed}"
@@ -234,7 +304,7 @@ def _evolve_command(args: argparse.Namespace) -> int:
     run_row: dict[str, Any] = {
         "type": "run",
         "format": "steno-zero/evolve-log",
-        "version": 3,
+        "version": 3 if module is None else 4,
         **dataclasses.asdict(params),
         "horizon": horizon,
         "sample_chars": args.sample_chars,
@@ -247,6 +317,9 @@ def _evolve_command(args: argparse.Namespace) -> int:
         "penalty_params": dataclasses.asdict(penalty),
         "rival_total": rival_total,
     }
+    if module is not None:
+        run_row["surrogate_sha256"] = model_sha
+        run_row["oversample"] = oversample
     start: float = time.monotonic()
 
     def on_generation(rec: GenerationRecord) -> None:
@@ -263,7 +336,10 @@ def _evolve_command(args: argparse.Namespace) -> int:
     with (out / "log.jsonl").open("w", encoding="utf-8", newline="\n") as log:
         log.write(_dump(run_row) + "\n")
         log.flush()
-        result = evolve(fit, costs, penalty, horizon, params, args.workers, on_generation)
+        result = evolve(
+            fit, costs, penalty, horizon, params, args.workers, on_generation,
+            screen=screen, oversample=oversample,
+        )  # fmt: skip
         best: Table = result.best
         totals: dict[str, float] = {}
         name: str
@@ -284,6 +360,179 @@ def _evolve_command(args: argparse.Namespace) -> int:
         log.write(_dump(result_row) + "\n")
     (out / "best.json").write_text(best.to_json(), encoding="utf-8")
     print(_dump(result_row))
+    return 0
+
+
+def _surrogate_module() -> ModuleType:
+    """Import the torch part lazily; a missing torch becomes a plain error message."""
+    try:
+        import steno_zero.surrogate as module
+    except ImportError as exc:
+        raise ValueError(NO_TORCH) from exc
+    import torch
+
+    torch.set_num_threads(1)
+    return module
+
+
+def _json_like(data: dict[str, Any]) -> dict[str, Any]:
+    """What a dataclass dict looks like after a trip through JSON (tuples become lists)."""
+    out: dict[str, Any] = json.loads(json.dumps(data))
+    return out
+
+
+def _surrogate_data_command(args: argparse.Namespace) -> int:
+    if args.workers < 1:
+        raise ValueError("workers must be at least 1")
+    params: DataParams = DataParams(
+        seed_base=args.seed_base,
+        seeds=args.seeds,
+        population=args.population,
+        generations=args.generations,
+        random=args.random,
+        random_extra=args.random_extra,
+        max_keys=args.max_keys,
+    )
+    text: str = _read_text(args.corpus, "all")
+    train: str = split_corpus(text, 0.1)[0]
+    fit: str = fitness_text(train, args.sample_chars, SAMPLE_CHUNKS)
+    cost_params: CostParams = CostParams()
+    penalty: PenaltyParams = PenaltyParams(confusion_s=args.confusion_s)
+    started: float = time.monotonic()
+    rows: list[DataRow] = generate_data(
+        fit, chord_costs(cost_params), penalty, args.horizon, params, args.workers
+    )
+    header: dict[str, Any] = {
+        "type": "run",
+        "format": "steno-zero/surrogate-data",
+        "version": 1,
+        "seed_base": params.seed_base,
+        "seeds": params.seeds,
+        "population": params.population,
+        "generations": params.generations,
+        "random": params.random,
+        "random_extra": params.random_extra,
+        "max_keys": params.max_keys,
+        "horizon": args.horizon,
+        "sample_chars": args.sample_chars,
+        "sample_chunks": SAMPLE_CHUNKS,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "fit_sha256": hashlib.sha256(fit.encode("utf-8")).hexdigest(),
+        "fit_chars": len(fit),
+        "cost_params": dataclasses.asdict(cost_params),
+        "penalty_params": dataclasses.asdict(penalty),
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    handle: IO[str]
+    with args.out.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(data_lines(header, rows))
+    print(f"{len(rows)} rows in {time.monotonic() - started:.1f}s", file=sys.stderr)
+    trajectory: int = sum(1 for r in rows if r.source == "trajectory")
+    print(
+        _dump(
+            {
+                "rows": len(rows),
+                "trajectory": trajectory,
+                "random": len(rows) - trajectory,
+                "seeds": list(range(params.seed_base, params.seed_base + params.seeds)),
+                "out": str(args.out),
+            }
+        )
+    )
+    return 0
+
+
+def _surrogate_train_command(args: argparse.Namespace) -> int:
+    module: ModuleType = _surrogate_module()
+    header: dict[str, Any]
+    rows: list[DataRow]
+    header, rows = read_data(args.data)
+    text: str = _read_text(args.corpus, "all")
+    train: str = split_corpus(text, 0.1)[0]
+    fit: str = fitness_text(train, header["sample_chars"], header["sample_chunks"])
+    params: Any = module.TrainParams(
+        seed=args.seed,
+        epochs=args.epochs,
+        batch=args.batch,
+        lr=args.lr,
+        hidden=args.hidden,
+        holdout=args.holdout,
+    )
+    model: Any
+    report: dict[str, Any]
+    model, report = module.train_surrogate(header, rows, fit, params)
+    module.save_surrogate(model, args.out)
+    report["model_sha256"] = hashlib.sha256(args.out.read_bytes()).hexdigest()
+    args.out.with_suffix(".json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(
+        _dump(
+            {
+                "rows_train": report["rows_train"],
+                "rows_holdout": report["rows_holdout"],
+                "spearman": report["holdout"]["all"]["spearman"],
+                "generation_spearman": report["holdout"]["all"]["generation_spearman"],
+                "linear_generation_spearman": report["linear"]["all"]["generation_spearman"],
+                "train_s": report["train_s"],
+                "out": str(args.out),
+            }
+        )
+    )
+    return 0
+
+
+def _surrogate_compare_command(args: argparse.Namespace) -> int:
+    module: ModuleType = _surrogate_module()
+    if args.workers < 1:
+        raise ValueError("workers must be at least 1")
+    if args.seeds < 1:
+        raise ValueError("seeds must be at least 1")
+    text: str = _read_text(args.corpus, "all")
+    train: str = split_corpus(text, 0.1)[0]
+    # the sample size comes out of the model file itself, which needs the sample to be checked
+    meta: dict[str, Any] = module.read_meta(args.model)
+    fit: str = fitness_text(train, meta["sample_chars"], meta["sample_chunks"])
+    model: Any = module.load_surrogate(args.model, fit)
+    meta = model.meta
+    penalty: PenaltyParams = PenaltyParams(**meta["penalty_params"])
+    costs: tuple[int, ...] = chord_costs(
+        CostParams(
+            base_ms=meta["cost_params"]["base_ms"],
+            extra_key_ms=meta["cost_params"]["extra_key_ms"],
+            finger_ms=tuple(meta["cost_params"]["finger_ms"]),
+        )
+    )
+    params: EvolveParams = EvolveParams(
+        population=args.population, generations=args.generations, max_keys=meta["max_keys"]
+    )
+    seeds: list[int] = list(range(args.seed_base, args.seed_base + args.seeds))
+    runs: list[RunStats] = compare_runs(
+        fit, costs, penalty, meta["horizon"], params, seeds, args.oversample, model.predict, args.workers
+    )
+    summary: dict[str, Any] = summarize(runs)
+    report: dict[str, Any] = {
+        "format": "steno-zero/surrogate-compare",
+        "version": 1,
+        "model": {"path": str(args.model), "sha256": hashlib.sha256(args.model.read_bytes()).hexdigest()},
+        "params": {
+            "seeds": seeds,
+            "population": params.population,
+            "generations": params.generations,
+            "elite": params.elite,
+            "oversample": args.oversample,
+            "workers": args.workers,
+            "max_keys": meta["max_keys"],
+            "horizon": meta["horizon"],
+            "sample_chars": meta["sample_chars"],
+            "fit_sha256": meta["fit_sha256"],
+        },
+        "runs": [dataclasses.asdict(r) for r in runs],
+        "summary": summary,
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(_dump(summary))
     return 0
 
 
@@ -479,6 +728,12 @@ def _run(args: argparse.Namespace) -> int:
         return _evolve_command(args)
     if args.command == "plot":
         return _plot_command(args)
+    if args.command == "surrogate":
+        if args.surrogate_command == "data":
+            return _surrogate_data_command(args)
+        if args.surrogate_command == "train":
+            return _surrogate_train_command(args)
+        return _surrogate_compare_command(args)
     if args.command == "trainer":
         if args.trainer_command == "drill":
             return _trainer_drill(args)

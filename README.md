@@ -92,6 +92,54 @@ Command: `uv run steno-zero evolve --generations 1000 --sample-chars 0 --workers
 
 The `K = 6` table has chords of up to 6 keys (distribution by number of keys 1..6: 10, 17, 58, 36, 27, 11); the unlimited one has two chords on 7 keys. These numbers describe the placeholder cost model, not a real keyboard.
 
+## Surrogate
+
+A small PyTorch network predicts `T` of a table without running the simulator and works as a **filter** in the evolution: each generation produces `--oversample` times more offspring than needed, the network keeps the best ones, and only those go to the exact simulator. The population, every `T` in the log and the final `T` are exact; a predicted `T` never enters the population. The model is valid only for the corpus sample, prices, penalties, horizon and `--max-keys` it was trained on; the commands refuse any other.
+
+Install torch (the CPU wheel from `download.pytorch.org/whl/cpu`, about 200 MB, no CUDA; `uv sync` for development installs it too, since it is in the `dev` group):
+
+```
+uv sync --extra surrogate
+```
+
+Without torch everything else works as before (`evolve`, `surrogate data`); the other commands say how to install it.
+
+```
+uv run steno-zero surrogate data                                       # seeds 1000..1003: evolution trajectories + 500 random tables each
+uv run steno-zero surrogate train --data runs/surrogate/data.jsonl     # writes runs/surrogate/model.pt and model.json
+uv run steno-zero evolve --surrogate runs/surrogate/model.pt --oversample 4 --out runs/sur
+uv run steno-zero surrogate compare --model runs/surrogate/model.pt    # seeds 0..2, with and without the filter
+```
+
+How it works. A table is a set of (piece, chord) entries of varying size, and `T` is nearly additive over entries, so the encoding is DeepSets: a small network over each entry (16 features: ten key bits, number of keys, chord price, piece length, log use count in the sample, number of neighbour chords in the table, a constant 1), a masked sum over entries, and a second network on the sum (about 13 000 parameters at `--hidden 64`). The result does not depend on the order of entries or on padding. The loss is MSE on the standardised `T`, the optimiser is Adam, the model after the last epoch is kept (no epoch selection on held-out data). The data are split **by seed**: the last seed is held out entirely, because neighbouring generations of one trajectory are almost the same table and a split by rows would leak. The seeds of `surrogate compare` (0..2) are not in the data (1000..1003).
+
+Metrics on the held-out seed. `generation_spearman` is the main one: the mean Spearman correlation inside one generation of the held-out trajectory, because the filter compares siblings of one generation. The plain `spearman` over all rows is inflated by the gap between early and late generations and is given for reference; MAE alone says little about order. The linear baseline is least squares on the entry-summed features.
+
+Measured (22 threads, Core Ultra 7 155H, defaults, torch 2.15.0+cpu, one thread for the network):
+
+| metric, held-out seed 1003 | network | linear |
+|---|---|---|
+| `generation_spearman`, trajectory | 0.657 | 0.272 |
+| `spearman`, all rows | 0.995 | 0.980 |
+| `spearman`, 500 random tables | 0.739 | -0.075 |
+| MAE, s (trajectory) | 3 113 | 8 745 |
+
+The network beats the linear baseline on every metric, most clearly on order inside a generation. 0.657 is far from a perfect ranking: the filter is a noisy one.
+
+Cost: `surrogate data` 205 s (38 003 rows, 54 MB, in `runs/`, not in git), `surrogate train` 157 s (`train_s`, 28 508 rows, 30 epochs).
+
+`surrogate compare` (3 seeds, 300 generations, population 32, `--oversample 4`, 6 runs in 5 min). "Target" is the final `T` of the run without the filter, same seed:
+
+| seed | final `T`, s: no filter / filter | exact evaluations to target: no filter / filter | seconds to target: no filter / filter |
+|---|---|---|---|
+| 0 | 206 647 / 193 212 | 9 004 / 5 040 | 44.9 / 31.3 |
+| 1 | 213 191 / 192 814 | 8 853 / 3 825 | 47.9 / 23.6 |
+| 2 | 211 591 / 192 763 | 8 975 / 3 988 | 49.6 / 24.4 |
+
+Speed-up in exact evaluations: 1.79, 2.31, 2.25 (median 2.25); in seconds: 1.43, 2.03, 2.03 (median 2.03); the filter reached the target in all 3 seeds, so by the strict rule (median above 1 and the target reached in every seed) it is faster, by evaluations and by time. At the same number of generations the filtered runs end 6.5 to 9.6 % lower in `T` (`final_ratios` 0.935, 0.904, 0.911). A full 300-generation run with the filter takes about 3 s longer than without it (52.7 s against 44.9 to 49.7 s) because candidate generation, features and the network run in the main process; the gain is that it gets to the same `T` in about half the time. This is a result of three seeds on one corpus with placeholder prices, not a general claim. Data and training cost 6 minutes once; at about 20 to 25 s saved per run to the same `T`, that pays back after roughly 15 runs of evolution with the same prices and corpus, and never if the prices change (the model must be retrained).
+
+Determinism. The same data, parameters, seed, torch version and machine give equal weight tensors (`torch.equal`), equal predictions, and byte-identical `log.jsonl` and `best.json` of `evolve --surrogate` for any `--workers`. Not promised: equal weights on another CPU, OS or torch version (BLAS and oneDNN pick different kernels) and byte-identical `model.pt`. The `surrogate data` file is byte-identical for any `--workers` and `PYTHONHASHSEED`. The log of a run with a surrogate has `version: 4` with two extra keys in the first line, `surrogate_sha256` and `oversample`; without `--surrogate` the log is as before.
+
 ## Fingers and layouts
 
 A chord is a set of fingers, not of letters. Bit `i` of a chord is the finger `FINGERS[i]`:
@@ -186,7 +234,8 @@ Logs of different layouts are read together, because the model is about fingers 
 ## Not supported
 
 - Crossover of tables and resuming an interrupted run.
-- The neural network.
+- Online retraining of the surrogate during evolution.
+- Surrogate models across corpora or cost parameters.
 - Chord prices that depend on the previous chord, slips of more than one key, per-finger slip rates, measured slip rates, measured prices (the `price fit` model exists, but there are no live measurements and nothing feeds them to the evolution), calibration of drill times to fluent typing.
 - Memory penalty stages beyond a per-entry cost with a rarity surcharge.
 - Free typing with backspace in the trainer, an estimate of `confusion_s` and measurements in the home mode.

@@ -16,6 +16,8 @@ MUTATIONS: tuple[str, ...] = ("add", "remove", "swap", "move")
 SAMPLE_CHARS: int = 60_000
 SAMPLE_CHUNKS: int = 20
 
+type Screen = Callable[[list[Table]], list[float]]
+
 
 @dataclass(frozen=True)
 class EvolveParams:
@@ -162,6 +164,9 @@ def _evolve(
     params: EvolveParams,
     run_map: Callable[[list[Table]], list[Score]],
     on_generation: Callable[[GenerationRecord], None] | None,
+    screen: Screen | None = None,
+    oversample: int = 1,
+    on_evaluated: Callable[[int, list[Table], list[Score]], None] | None = None,
 ) -> EvolveResult:
     rng: random.Random = random.Random(params.seed)
     pop: list[Table] = [
@@ -189,6 +194,8 @@ def _evolve(
         for t, s in zip(fresh, scores, strict=True):
             cache[t] = s
         evaluations += len(fresh)
+        if on_evaluated is not None:
+            on_evaluated(gen, list(fresh), list(scores))
         totals: list[float] = [cache[t].total for t in pop]
         order: list[int] = sorted(range(len(pop)), key=lambda k: (totals[k], k))
         top: int = order[0]
@@ -214,7 +221,9 @@ def _evolve(
         if gen == params.generations:
             break
         nxt: list[Table] = [pop[k] for k in order[: params.elite]]
-        while len(nxt) < params.population:
+        wanted: int = params.population - len(nxt)
+        candidates: list[Table] = []
+        while len(candidates) < wanted * oversample:
             contenders: list[int] = rng.sample(range(len(pop)), params.tournament)
             parent: Table = pop[min(contenders, key=lambda k: (totals[k], k))]
             kind: str
@@ -222,7 +231,14 @@ def _evolve(
             for n in range(rng.randint(1, params.max_mutations)):  # noqa: B007
                 kind = rng.choice(MUTATIONS)
                 parent = mutate(parent, kind, text, rng, params.max_keys)
-            nxt.append(parent)
+            candidates.append(parent)
+        if screen is not None:
+            marks: list[float] = screen(candidates)
+            if len(marks) != len(candidates):
+                raise ValueError("screen must return one number per candidate")
+            kept: list[int] = sorted(range(len(candidates)), key=lambda k: (marks[k], k))[:wanted]
+            candidates = [candidates[k] for k in sorted(kept)]
+        nxt.extend(candidates)
         prev = cache
         pop = nxt
     assert best is not None and best_score is not None
@@ -237,9 +253,17 @@ def evolve(
     params: EvolveParams,
     workers: int = 1,
     on_generation: Callable[[GenerationRecord], None] | None = None,
+    *,
+    screen: Screen | None = None,
+    oversample: int = 1,
+    on_evaluated: Callable[[int, list[Table], list[Score]], None] | None = None,
 ) -> EvolveResult:
     if len(text) < 2:
         raise ValueError("text is too short")
+    if oversample < 1:
+        raise ValueError("oversample must be at least 1")
+    if oversample > 1 and screen is None:
+        raise ValueError("oversample above 1 needs a screen")
     if workers < 1:
         raise ValueError("workers must be at least 1")
     if workers == 1:
@@ -247,7 +271,9 @@ def evolve(
         def run_serial(tables: list[Table]) -> list[Score]:
             return [evaluate(text, t, costs, penalty, horizon) for t in tables]
 
-        return _evolve(text, costs, penalty, horizon, params, run_serial, on_generation)
+        return _evolve(
+            text, costs, penalty, horizon, params, run_serial, on_generation, screen, oversample, on_evaluated
+        )
     executor: Any
     with ProcessPoolExecutor(
         max_workers=workers, initializer=_init_worker, initargs=(text, costs, penalty, horizon)
@@ -256,4 +282,6 @@ def evolve(
         def run_pool(tables: list[Table]) -> list[Score]:
             return list(executor.map(_eval_worker, tables))
 
-        return _evolve(text, costs, penalty, horizon, params, run_pool, on_generation)
+        return _evolve(
+            text, costs, penalty, horizon, params, run_pool, on_generation, screen, oversample, on_evaluated
+        )
