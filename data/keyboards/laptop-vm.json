@@ -1,0 +1,101 @@
+{
+ "format": "steno-zero/keyboard-profile",
+ "version": 2,
+ "name": "laptop-vm",
+ "session": "calibration-2026-11-10T10-15-34.928Z",
+ "created": "2026-11-10T10:15:34.928Z",
+ "keys": [
+  "KeyA",
+  "KeyD",
+  "KeyF",
+  "KeyJ",
+  "KeyK",
+  "KeyL",
+  "KeyM",
+  "KeyS",
+  "KeyV",
+  "Semicolon"
+ ],
+ "blocked": [
+  {
+   "keys": [
+    "KeyA",
+    "KeyF",
+    "KeyK"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyA",
+    "KeyJ",
+    "KeyS"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyA",
+    "KeyK",
+    "Semicolon"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyD",
+    "KeyJ",
+    "KeyK"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyF",
+    "KeyL",
+    "KeyS"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyF",
+    "KeyL",
+    "KeyV"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyF",
+    "KeyV",
+    "Semicolon"
+   ],
+   "unclear": false
+  },
+  {
+   "keys": [
+    "KeyJ",
+    "KeyM",
+    "KeyS"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyJ",
+    "KeyM",
+    "Semicolon"
+   ],
+   "unclear": true
+  },
+  {
+   "keys": [
+    "KeyK",
+    "KeyS",
+    "Semicolon"
+   ],
+   "unclear": true
+  }
+ ]
+}
