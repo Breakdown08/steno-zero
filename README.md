@@ -4,6 +4,12 @@ A test bench for one question: which table "piece of text -> chord" on ten keys 
 
 **Chord prices, the memory penalty `M` and the confusion penalty `C` are placeholders, not measurements.** Every number in `src/steno_zero/params.py` is a stub until real values are measured on a keyboard that holds ten simultaneous keys.
 
+## Status
+
+Frozen on 2026-11-19. The software side is done: corpus, simulator, rival, evolution, the PyTorch surrogate, the trainer page, keyboard calibration and profiles, and the chord price model (`price fit`), each with tests. What stops it is hardware: live chord prices need a keyboard that passes every combination of ten keys, and the keyboards at hand pass at most six (see Calibration). Until such a keyboard exists, the prices in `params.py` stay placeholders and `price fit` has no live numbers to fit.
+
+Known open issue: calibration blocks a combination even when the miss was an extra key (`unclear`), so a human slip can take a chord away from the trainer. It should ask again instead and block only on missing keys. It is left for when calibration runs on a full keyboard.
+
 ## What it does
 
 - Alphabet of 41 symbols: 33 Russian letters, space and `- . , ! ? : ;`. Text is normalised (lower case, dashes unified, everything else dropped).
